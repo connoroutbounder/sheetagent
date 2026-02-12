@@ -178,7 +178,9 @@ export async function executeTool(toolCall: ToolCall): Promise<string> {
       case 'apollo_find_email':
         return await apolloFindEmail(input);
       case 'apollo_get_lists':
-        return await apolloGetLists();
+        return await apolloGetLists(input);
+      case 'apollo_get_list_entries':
+        return await apolloGetListEntries(input);
       case 'apollo_create_list':
         return await apolloCreateList(input);
       case 'apollo_add_contact_to_list':
@@ -770,10 +772,11 @@ async function apolloFindEmail(input: {
 // =============================================================
 
 /**
- * Fetches all saved lists (labels) from Apollo.io.
- * Returns both contact lists and account lists.
+ * Fetches saved lists (labels) from Apollo.io.
+ * Supports optional search filter to find lists by name.
+ * Without a search term, returns all lists (may be truncated if >100).
  */
-async function apolloGetLists(): Promise<string> {
+async function apolloGetLists(input?: { search?: string }): Promise<string> {
   if (!getApolloApiKey()) {
     return 'Apollo.io unavailable: No API key configured. Add your Apollo API key in the sidebar Settings.';
   }
@@ -791,34 +794,164 @@ async function apolloGetLists(): Promise<string> {
       throw new Error(`Apollo API error (${response.status}): ${errText}`);
     }
 
-    const labels: any[] = await response.json();
+    let labels: any[] = await response.json();
 
     if (!labels || labels.length === 0) {
       return 'No lists found in your Apollo account.';
     }
 
-    const contactLists = labels.filter((l: any) => l.modality === 'contacts');
-    const accountLists = labels.filter((l: any) => l.modality === 'accounts');
+    // Filter by search term if provided (case-insensitive partial match)
+    const searchTerm = input?.search?.toLowerCase();
+    if (searchTerm) {
+      labels = labels.filter((l: any) => 
+        l.name?.toLowerCase().includes(searchTerm)
+      );
 
-    let result = '';
-
-    if (contactLists.length > 0) {
-      result += `📋 Contact Lists (${contactLists.length}):\n`;
-      for (const l of contactLists) {
-        result += `  • "${l.name}" — ${l.cached_count || 0} contacts (ID: ${l.id})\n`;
+      if (labels.length === 0) {
+        return `No lists found matching "${input!.search}". Try a shorter/different search term.`;
       }
     }
 
+    const contactLists = labels.filter((l: any) => l.modality === 'contacts');
+    const accountLists = labels.filter((l: any) => l.modality === 'accounts');
+
+    let result = searchTerm
+      ? `Found ${labels.length} list(s) matching "${input!.search}":\n\n`
+      : `Total lists: ${labels.length}\n\n`;
+
     if (accountLists.length > 0) {
-      result += `\n🏢 Account Lists (${accountLists.length}):\n`;
+      result += `🏢 Account Lists (${accountLists.length}):\n`;
       for (const l of accountLists) {
         result += `  • "${l.name}" — ${l.cached_count || 0} accounts (ID: ${l.id})\n`;
+      }
+    }
+
+    if (contactLists.length > 0) {
+      result += `\n📋 Contact Lists (${contactLists.length}):\n`;
+      for (const l of contactLists) {
+        result += `  • "${l.name}" — ${l.cached_count || 0} contacts (ID: ${l.id})\n`;
       }
     }
 
     return result || 'No lists found.';
   } catch (e) {
     return `Apollo get lists error: ${e.message}`;
+  }
+}
+
+/**
+ * Helper: finds an Apollo list (label) by name.
+ * Returns { id, name, modality, cached_count } or null.
+ */
+async function apolloFindListByName(listName: string): Promise<any | null> {
+  const response = await fetch(`${APOLLO_BASE_URL}/api/v1/labels`, {
+    headers: {
+      'X-Api-Key': getApolloApiKey(),
+      'Cache-Control': 'no-cache',
+    },
+  });
+
+  if (!response.ok) return null;
+
+  const labels: any[] = await response.json();
+  const searchLower = listName.toLowerCase();
+
+  // Try exact match first
+  let match = labels.find((l: any) => l.name?.toLowerCase() === searchLower);
+  // Fall back to partial match
+  if (!match) {
+    match = labels.find((l: any) => l.name?.toLowerCase().includes(searchLower));
+  }
+  return match || null;
+}
+
+/**
+ * Fetches entries (accounts or contacts) FROM an Apollo list.
+ * Given a list name, finds the list, determines its type, and
+ * returns all entries with their key fields.
+ */
+async function apolloGetListEntries(input: {
+  list_name: string;
+  page?: number;
+  per_page?: number;
+}): Promise<string> {
+  if (!getApolloApiKey()) {
+    return 'Apollo.io unavailable: No API key configured.';
+  }
+
+  try {
+    // Step 1: Find the list by name
+    const list = await apolloFindListByName(input.list_name);
+    if (!list) {
+      return `List "${input.list_name}" not found. Use apollo_get_lists with a search term to find it.`;
+    }
+
+    const perPage = Math.min(input.per_page || 25, 100);
+    const page = input.page || 1;
+
+    // Step 2: Fetch entries based on list modality
+    if (list.modality === 'accounts') {
+      const data = await apolloRequest('/v1/accounts/search', {
+        label_ids: [list.id],
+        per_page: perPage,
+        page: page,
+      });
+
+      const accounts = data.accounts || [];
+      const total = data.pagination?.total_entries || accounts.length;
+
+      if (accounts.length === 0) {
+        return `List "${list.name}" exists but has no accounts.`;
+      }
+
+      let result = `🏢 "${list.name}" — ${total} accounts (showing page ${page}):\n\n`;
+      for (const a of accounts) {
+        result += `• ${a.name || 'Unknown'}`;
+        if (a.domain || a.primary_domain) result += ` — ${a.primary_domain || a.domain}`;
+        if (a.industry) result += ` | Industry: ${a.industry}`;
+        if (a.estimated_num_employees) result += ` | Employees: ${a.estimated_num_employees}`;
+        if (a.website_url) result += ` | Web: ${a.website_url}`;
+        result += '\n';
+      }
+
+      if (total > page * perPage) {
+        result += `\n(Page ${page} of ${Math.ceil(total / perPage)}. Use page: ${page + 1} to see more.)`;
+      }
+
+      return truncateResult(result, 4000);
+    } else {
+      // Contacts list — use mixed_people search with label
+      const data = await apolloRequest('/api/v1/mixed_people/api_search', {
+        label_ids: [list.id],
+        per_page: perPage,
+        page: page,
+      });
+
+      const people = data.people || [];
+      const total = data.pagination?.total_entries || people.length;
+
+      if (people.length === 0) {
+        return `List "${list.name}" exists but has no contacts.`;
+      }
+
+      let result = `📋 "${list.name}" — ${total} contacts (showing page ${page}):\n\n`;
+      for (const p of people) {
+        const name = [p.first_name, p.last_name].filter(Boolean).join(' ') || 'Unknown';
+        result += `• ${name}`;
+        if (p.title) result += ` — ${p.title}`;
+        if (p.email) result += ` | ${p.email}`;
+        if (p.organization?.name) result += ` | ${p.organization.name}`;
+        result += '\n';
+      }
+
+      if (total > page * perPage) {
+        result += `\n(Page ${page} of ${Math.ceil(total / perPage)}. Use page: ${page + 1} to see more.)`;
+      }
+
+      return truncateResult(result, 4000);
+    }
+  } catch (e) {
+    return `Apollo get list entries error: ${e.message}`;
   }
 }
 

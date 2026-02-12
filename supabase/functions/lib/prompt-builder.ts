@@ -39,7 +39,7 @@ AVAILABLE CONTEXT:
 AVAILABLE TOOL CATEGORIES:
 - 🟢 Perplexity web tools: web_search, web_scrape, web_research — for live web lookups, finding websites, news, general research
 - 🟣 Apollo.io tools: apollo_enrich_person, apollo_enrich_company, apollo_search_people, apollo_find_email — for B2B contact/company data, email finding, professional enrichment
-- 🟣 Apollo.io list tools: apollo_get_lists, apollo_create_list, apollo_add_contact_to_list, apollo_add_account_to_list — for pushing leads/companies into Apollo saved lists
+- 🟣 Apollo.io list tools: apollo_get_lists, apollo_get_list_entries, apollo_create_list, apollo_add_contact_to_list, apollo_add_account_to_list — for reading from and pushing to Apollo saved lists
 - 🟡 ZeroBounce tools: zerobounce_validate, zerobounce_batch_validate, zerobounce_guess_format — for email verification, deliverability checks, email format detection
 - 🔵 Claude (you): reasoning, analysis, summarization, writing, data transformation — no tool call needed`;
 
@@ -66,7 +66,9 @@ CRITICAL RULES:
 - BE DECISIVE. When the user tells you what they want, BUILD THE AGENT IMMEDIATELY.
 - ALWAYS mention which tool(s)/model(s) will be used and why. Example: "I'll use 🟣 Apollo.io to enrich each contact since we need professional email addresses and titles."
 - If a task needs Apollo.io enrichment → set tools to include "apollo_enrich_person", "apollo_enrich_company", "apollo_search_people", or "apollo_find_email"
-- If a task needs to push leads/companies to Apollo lists → set tools to include "apollo_get_lists", "apollo_create_list", "apollo_add_contact_to_list", or "apollo_add_account_to_list"
+- Need to PULL data from an Apollo list into the sheet? → Use "apollo_get_list_entries" (fetches accounts or contacts from a named list)
+- Need to PUSH leads/companies to Apollo lists? → Use "apollo_add_contact_to_list" or "apollo_add_account_to_list"
+- Need to find or browse Apollo lists? → Use "apollo_get_lists" with a search term
 - If a task needs email validation → set tools to include "zerobounce_validate" or "zerobounce_batch_validate"
 - If a task needs to guess/construct emails from names → set tools to include "zerobounce_guess_format"
 - If a task needs web data → set tools to include "search" and/or "web_scrape" (these use Perplexity under the hood)
@@ -101,7 +103,7 @@ When you're ready (which should usually be your FIRST response), include this JS
 TOOL NAME REFERENCE:
 - Perplexity web tools: "search", "web_scrape", "web_research"
 - Apollo.io enrichment tools: "apollo_enrich_person", "apollo_enrich_company", "apollo_search_people", "apollo_find_email"
-- Apollo.io list tools: "apollo_get_lists", "apollo_create_list", "apollo_add_contact_to_list", "apollo_add_account_to_list"
+- Apollo.io list tools: "apollo_get_lists", "apollo_get_list_entries", "apollo_create_list", "apollo_add_contact_to_list", "apollo_add_account_to_list"
 - ZeroBounce tools: "zerobounce_validate", "zerobounce_batch_validate", "zerobounce_guess_format", "zerobounce_credits"
 
 IMPORTANT: Include the agent_config block as soon as the user's intent is clear. Do not wait for multiple rounds of confirmation.`;
@@ -175,12 +177,14 @@ export function buildRowPrompt(
       system += '\n- Always use company DOMAIN when available (more precise than company name).';
       system += '\n- NEVER enumerate all employees. Always use title/seniority filters to find specific roles.';
       system += '\n\nAPOLLO LIST MANAGEMENT:';
+      system += '\n- **Pull companies FROM a list**: apollo_get_list_entries({ list_name: "My List" }) — fetches all accounts/contacts from a named list with their details (name, domain, industry, etc.)';
+      system += '\n- **Find a list**: apollo_get_lists({ search: "keyword" }) — ALWAYS use search param to filter (there may be hundreds of lists)';
       system += '\n- **Push company to list**: apollo_add_account_to_list({ list_name: "My List", name: "Tesla", domain: "tesla.com" }) — DOMAIN IS REQUIRED. Apollo uses the domain to match the real company in their database and auto-enriches it.';
       system += '\n- **CRITICAL**: Always pass the domain/website URL when adding accounts to lists. Full URLs like "https://www.tesla.com" are auto-stripped to "tesla.com".';
       system += '\n- **Push contact to list**: apollo_add_contact_to_list({ list_name: "My List", first_name, last_name, email, title, organization_name })';
-      system += '\n- **Get existing lists**: apollo_get_lists() — shows all contact and account lists';
       system += '\n- **Create new list**: apollo_create_list({ name: "My New List", type: "accounts" }) — type is "contacts" or "accounts"';
-      system += '\n- **Workflow for building company lists from sheet data**: For each row, read the company name and website/domain from the sheet columns, then call apollo_add_account_to_list with both name and domain.';
+      system += '\n- **Workflow — pull list to sheet**: Use apollo_get_list_entries to get all entries, then output each entry\'s data as the row result.';
+      system += '\n- **Workflow — push sheet to list**: For each row, read the company name and website/domain from the sheet columns, then call apollo_add_account_to_list with both name and domain.';
     }
     if (hasZerobounceTools) {
       system += '\n- 🟡 ZeroBounce tools available. Validates email deliverability and guesses email format patterns.';
@@ -474,11 +478,41 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
   if (enabledTools.includes('apollo_get_lists')) {
     tools.push({
       name: 'apollo_get_lists',
-      description: 'Get all saved lists from your Apollo.io account. Returns both contact lists and account lists with their names, IDs, and counts. Use this to find existing lists before adding contacts/companies.',
+      description: 'Search and list saved lists from Apollo.io. ALWAYS use the "search" parameter to filter by name — there may be hundreds of lists. Returns matching lists with names, types, counts, and IDs.',
       input_schema: {
         type: 'object',
-        properties: {},
+        properties: {
+          search: {
+            type: 'string',
+            description: 'Search term to filter lists by name (case-insensitive partial match). ALWAYS provide this to avoid truncation. Example: "UK Brands" or "Good-Loop".',
+          },
+        },
         required: [],
+      },
+    });
+  }
+
+  if (enabledTools.includes('apollo_get_list_entries')) {
+    tools.push({
+      name: 'apollo_get_list_entries',
+      description: 'Fetch companies or contacts FROM an Apollo.io list. Given a list name, finds the list and returns all its entries with key fields (name, domain, industry, employees for accounts; name, title, email, company for contacts). Use this to pull list data into the sheet.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          list_name: {
+            type: 'string',
+            description: 'The name of the Apollo list to fetch entries from (case-insensitive, supports partial match)',
+          },
+          page: {
+            type: 'number',
+            description: 'Page number for pagination (default: 1). Use for large lists.',
+          },
+          per_page: {
+            type: 'number',
+            description: 'Number of entries per page (default: 25, max: 100).',
+          },
+        },
+        required: ['list_name'],
       },
     });
   }
