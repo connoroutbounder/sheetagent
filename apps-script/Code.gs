@@ -38,6 +38,15 @@ function onOpen(e) {
 }
 
 /**
+ * Homepage trigger for the add-on card interface.
+ * Called when the add-on is opened from the Extensions menu.
+ * Opens the sidebar automatically.
+ */
+function onHomepage(e) {
+  showSidebar();
+}
+
+/**
  * Opens the sidebar chat interface.
  */
 function showSidebar() {
