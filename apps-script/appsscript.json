@@ -9,6 +9,11 @@
     "https://www.googleapis.com/auth/script.container.ui",
     "https://www.googleapis.com/auth/userinfo.email"
   ],
+  "urlFetchWhitelist": [
+    "https://djvyqtiespdxevlqacue.supabase.co/",
+    "https://api.apollo.io/",
+    "https://api.zerobounce.net/"
+  ],
   "addOns": {
     "common": {
       "name": "Agent Builder",
