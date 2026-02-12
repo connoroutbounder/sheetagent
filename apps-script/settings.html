@@ -41,10 +41,15 @@
   <input type="password" id="apolloApiKey" placeholder="Enter your Apollo.io API key" />
   <div class="help">For contact/company enrichment, email finding, people search. Get yours at <a href="https://app.apollo.io/#/settings/integrations/api" target="_blank" style="color: #34d399;">Apollo Settings</a></div>
 
-  <div class="btn-row">
+  <label>🟡 ZeroBounce API Key</label>
+  <input type="password" id="zerobounceApiKey" placeholder="Enter your ZeroBounce API key" />
+  <div class="help">For email validation, deliverability checks, email format guessing. Get yours at <a href="https://www.zerobounce.net/members/apikey/" target="_blank" style="color: #34d399;">ZeroBounce Dashboard</a></div>
+
+  <div class="btn-row" style="flex-wrap: wrap; gap: 6px;">
     <button class="btn-primary" onclick="save()">Save</button>
     <button class="btn-test" onclick="testBackend()">Test Backend</button>
     <button class="btn-test" onclick="testApollo()" style="color: #8b5cf6; border-color: #c4b5fd;">Test Apollo</button>
+    <button class="btn-test" onclick="testZerobounce()" style="color: #ca8a04; border-color: #fde68a;">Test ZeroBounce</button>
     <button class="btn-secondary" onclick="google.script.host.close()">Cancel</button>
   </div>
 
@@ -55,6 +60,7 @@
       if (settings.backendUrl) document.getElementById('backendUrl').value = settings.backendUrl;
       if (settings.apiKey) document.getElementById('apiKey').value = settings.apiKey;
       if (settings.apolloApiKey) document.getElementById('apolloApiKey').value = settings.apolloApiKey;
+      if (settings.zerobounceApiKey) document.getElementById('zerobounceApiKey').value = settings.zerobounceApiKey;
     }).getSettings();
 
     function save() {
@@ -62,6 +68,7 @@
         backendUrl: document.getElementById('backendUrl').value.trim(),
         apiKey: document.getElementById('apiKey').value.trim(),
         apolloApiKey: document.getElementById('apolloApiKey').value.trim(),
+        zerobounceApiKey: document.getElementById('zerobounceApiKey').value.trim(),
       };
       google.script.run.withSuccessHandler(function() {
         showStatus('success', 'Settings saved!');
@@ -89,6 +96,16 @@
       }).withFailureHandler(function(err) {
         showStatus('error', 'Apollo test failed: ' + err.message);
       }).testApolloConnection();
+    }
+
+    function testZerobounce() {
+      showStatus('', 'Testing ZeroBounce connection...');
+      google.script.run.withSuccessHandler(function(result) {
+        if (result.success) showStatus('success', '🟡 ' + result.message);
+        else showStatus('error', '🟡 ' + result.message);
+      }).withFailureHandler(function(err) {
+        showStatus('error', 'ZeroBounce test failed: ' + err.message);
+      }).testZerobounceConnection();
     }
 
     function showStatus(type, msg) {

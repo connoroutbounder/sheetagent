@@ -53,6 +53,10 @@ const ApiClient = {
     if (apolloKey) {
       headers['X-Apollo-Api-Key'] = apolloKey;
     }
+    const zerobounceKey = userProps.getProperty('zerobounce_api_key');
+    if (zerobounceKey) {
+      headers['X-Zerobounce-Api-Key'] = zerobounceKey;
+    }
     
     const options = {
       method: method,

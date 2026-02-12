@@ -381,6 +381,8 @@ function getSettings() {
     hasApiKey: !!props.getProperty('api_key'),
     apolloApiKey: props.getProperty('apollo_api_key') ? '••••••••' : '',
     hasApolloApiKey: !!props.getProperty('apollo_api_key'),
+    zerobounceApiKey: props.getProperty('zerobounce_api_key') ? '••••••••' : '',
+    hasZerobounceApiKey: !!props.getProperty('zerobounce_api_key'),
   };
 }
 
@@ -396,6 +398,9 @@ function saveSettings(settings) {
   }
   if (settings.apolloApiKey && settings.apolloApiKey !== '••••••••') {
     PropertiesService.getUserProperties().setProperty('apollo_api_key', settings.apolloApiKey);
+  }
+  if (settings.zerobounceApiKey && settings.zerobounceApiKey !== '••••••••') {
+    PropertiesService.getUserProperties().setProperty('zerobounce_api_key', settings.zerobounceApiKey);
   }
   return { success: true };
 }
@@ -432,6 +437,36 @@ function testApolloConnection() {
       return { success: false, message: 'Invalid API key (HTTP ' + code + '). Check your key at Apollo Settings.' };
     } else {
       return { success: false, message: 'Apollo returned HTTP ' + code + ': ' + response.getContentText().substring(0, 200) };
+    }
+  } catch(e) {
+    return { success: false, message: 'Connection failed: ' + e.toString() };
+  }
+}
+
+/**
+ * Tests the ZeroBounce API connection using the user's saved key.
+ * Makes a lightweight credits check to verify the key works.
+ */
+function testZerobounceConnection() {
+  var key = PropertiesService.getUserProperties().getProperty('zerobounce_api_key');
+  if (!key) {
+    return { success: false, message: 'No ZeroBounce API key saved. Enter your key and click Save first.' };
+  }
+  
+  try {
+    var response = UrlFetchApp.fetch('https://api.zerobounce.net/v2/getcredits?api_key=' + encodeURIComponent(key), {
+      muteHttpExceptions: true,
+    });
+    
+    var code = response.getResponseCode();
+    if (code === 200) {
+      var data = JSON.parse(response.getContentText());
+      if (data.Credits !== undefined) {
+        return { success: true, message: '✅ ZeroBounce connected! Credits remaining: ' + data.Credits };
+      }
+      return { success: false, message: 'Invalid API key — no credits data returned.' };
+    } else {
+      return { success: false, message: 'ZeroBounce returned HTTP ' + code + '. Check your API key.' };
     }
   } catch(e) {
     return { success: false, message: 'Connection failed: ' + e.toString() };

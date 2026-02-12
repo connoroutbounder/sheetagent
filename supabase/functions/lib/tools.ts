@@ -4,7 +4,7 @@
  * ============================================================
  * Handles tool calls from Claude during agent execution.
  * 
- * THREE TOOL CATEGORIES:
+ * FOUR TOOL CATEGORIES:
  * 
  * 🟢 Web tools (search, scrape) — powered by Perplexity
  *    A search-native AI model that returns grounded, cited results
@@ -12,7 +12,11 @@
  * 
  * 🟣 Apollo.io tools (enrich, search) — powered by Apollo.io API
  *    Sales intelligence platform for contact/company enrichment,
- *    email finding, and people search. First external API connector.
+ *    email finding, and people search.
+ * 
+ * 🟡 ZeroBounce tools (validate, guess format) — powered by ZeroBounce API
+ *    Email verification and validation service. Checks deliverability,
+ *    detects disposable/catch-all emails, and guesses email formats.
  * 
  * 🔵 Analysis tools (extract) — handled by Claude (the orchestrator)
  */
@@ -40,14 +44,14 @@ const PERPLEXITY_API_KEY = Deno.env.get('PERPLEXITY_API_KEY') || '';
 const FIRECRAWL_API_KEY = Deno.env.get('FIRECRAWL_API_KEY') || '';
 const PERPLEXITY_MODEL = 'sonar';  // Fast, search-optimized model
 const APOLLO_BASE_URL = 'https://api.apollo.io';
+const ZEROBOUNCE_BASE_URL = 'https://api.zerobounce.net/v2';
 
-// Apollo API key: user-provided (per-request) takes priority over env var
+// External API keys: user-provided (per-request) takes priority over env var
 let _apolloApiKey = Deno.env.get('APOLLO_API_KEY') || '';
+let _zerobounceApiKey = Deno.env.get('ZEROBOUNCE_API_KEY') || '';
 
 /**
  * Sets the Apollo API key for the current request.
- * Called from agent-run with the user-provided key from the X-Apollo-Api-Key header.
- * Falls back to the Supabase secret if not provided.
  */
 export function setApolloApiKey(key: string) {
   if (key) _apolloApiKey = key;
@@ -55,6 +59,17 @@ export function setApolloApiKey(key: string) {
 
 function getApolloApiKey(): string {
   return _apolloApiKey;
+}
+
+/**
+ * Sets the ZeroBounce API key for the current request.
+ */
+export function setZerobounceApiKey(key: string) {
+  if (key) _zerobounceApiKey = key;
+}
+
+function getZerobounceApiKey(): string {
+  return _zerobounceApiKey;
 }
 
 /**
@@ -116,6 +131,16 @@ export async function executeTool(toolCall: ToolCall): Promise<string> {
         return await apolloSearchPeople(input);
       case 'apollo_find_email':
         return await apolloFindEmail(input);
+
+      // 🟡 ZeroBounce tools
+      case 'zerobounce_validate':
+        return await zerobounceValidate(input.email);
+      case 'zerobounce_batch_validate':
+        return await zerobounceBatchValidate(input.emails);
+      case 'zerobounce_guess_format':
+        return await zerobounceGuessFormat(input.domain, input.first_name, input.last_name);
+      case 'zerobounce_credits':
+        return await zerobounceGetCredits();
 
       // 🔵 Analysis tools
       case 'extract_data':
@@ -684,6 +709,221 @@ async function apolloFindEmail(input: {
   }
 
   return 'Not enough information to find email. Provide either (name + company) or (title + company domain).';
+}
+
+// =============================================================
+// ZEROBOUNCE TOOLS
+// =============================================================
+
+/**
+ * Validates a single email address via ZeroBounce.
+ * Returns deliverability status, SMTP provider, domain age, etc.
+ */
+async function zerobounceValidate(email: string): Promise<string> {
+  const apiKey = getZerobounceApiKey();
+  if (!apiKey) {
+    return 'ZeroBounce unavailable: No API key configured. Add your ZeroBounce API key in the sidebar Settings.';
+  }
+
+  try {
+    const url = `${ZEROBOUNCE_BASE_URL}/validate?api_key=${encodeURIComponent(apiKey)}&email=${encodeURIComponent(email)}`;
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`ZeroBounce API error (${response.status}): ${errText}`);
+    }
+
+    const data = await response.json();
+
+    const fields: string[] = [];
+    fields.push(`Email: ${data.address}`);
+    fields.push(`Status: ${data.status}`);
+    if (data.sub_status) fields.push(`Sub-status: ${data.sub_status}`);
+    fields.push(`Free email: ${data.free_email ? 'Yes' : 'No'}`);
+    if (data.smtp_provider) fields.push(`SMTP Provider: ${data.smtp_provider}`);
+    if (data.mx_found === 'true') fields.push(`MX Record: ${data.mx_record}`);
+    if (data.domain_age_days) fields.push(`Domain Age: ${data.domain_age_days} days`);
+    if (data.did_you_mean) fields.push(`Did you mean: ${data.did_you_mean}`);
+    if (data.firstname) fields.push(`First Name: ${data.firstname}`);
+    if (data.lastname) fields.push(`Last Name: ${data.lastname}`);
+    if (data.city) fields.push(`Location: ${[data.city, data.region, data.country].filter(Boolean).join(', ')}`);
+
+    return fields.join('\n');
+  } catch (e) {
+    return `ZeroBounce validate error: ${e.message}`;
+  }
+}
+
+/**
+ * Validates multiple email addresses in a single call.
+ * ZeroBounce batch endpoint supports up to 100 emails.
+ */
+async function zerobounceBatchValidate(emails: string[]): Promise<string> {
+  const apiKey = getZerobounceApiKey();
+  if (!apiKey) {
+    return 'ZeroBounce unavailable: No API key configured. Add your ZeroBounce API key in the sidebar Settings.';
+  }
+
+  if (!emails || emails.length === 0) {
+    return 'No emails provided for validation.';
+  }
+
+  // For small batches, validate one by one (simpler, no file upload needed)
+  if (emails.length <= 10) {
+    const results: string[] = [];
+    for (const email of emails) {
+      const result = await zerobounceValidate(email);
+      results.push(result);
+      results.push('---');
+    }
+    return results.join('\n');
+  }
+
+  // For larger batches, use the batch endpoint
+  try {
+    const emailBatch = emails.slice(0, 100).map(e => ({ email_address: e }));
+    const url = `${ZEROBOUNCE_BASE_URL}/validatebatch`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: apiKey,
+        email_batch: emailBatch,
+      }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`ZeroBounce batch API error (${response.status}): ${errText}`);
+    }
+
+    const data = await response.json();
+    const emailResults = data.email_batch || [];
+    let result = `Validated ${emailResults.length} emails:\n\n`;
+
+    for (const item of emailResults) {
+      result += `• ${item.address}: ${item.status}`;
+      if (item.sub_status) result += ` (${item.sub_status})`;
+      if (item.free_email) result += ' [free]';
+      result += '\n';
+    }
+
+    if (data.errors?.length > 0) {
+      result += `\nErrors: ${data.errors.map((e: any) => `${e.email_address}: ${e.error}`).join(', ')}`;
+    }
+
+    return truncateResult(result, 4000);
+  } catch (e) {
+    return `ZeroBounce batch validate error: ${e.message}`;
+  }
+}
+
+/**
+ * Guesses the email format for a domain (e.g. first.last@domain.com).
+ * Optionally, if first_name and last_name are provided, returns the
+ * probable email address for that person.
+ */
+async function zerobounceGuessFormat(domain: string, firstName?: string, lastName?: string): Promise<string> {
+  const apiKey = getZerobounceApiKey();
+  if (!apiKey) {
+    return 'ZeroBounce unavailable: No API key configured. Add your ZeroBounce API key in the sidebar Settings.';
+  }
+
+  try {
+    let url = `${ZEROBOUNCE_BASE_URL}/guessformat?api_key=${encodeURIComponent(apiKey)}&domain=${encodeURIComponent(domain)}`;
+    if (firstName) url += `&first_name=${encodeURIComponent(firstName)}`;
+    if (lastName) url += `&last_name=${encodeURIComponent(lastName)}`;
+
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`ZeroBounce API error (${response.status}): ${errText}`);
+    }
+
+    const data = await response.json();
+
+    if (data.failure_reason) {
+      return `Could not determine email format for ${domain}: ${data.failure_reason}`;
+    }
+
+    const fields: string[] = [];
+    fields.push(`Domain: ${data.domain}`);
+    if (data.company_name) fields.push(`Company: ${data.company_name}`);
+    fields.push(`Primary Format: ${data.format} (${data.confidence} confidence)`);
+
+    if (data.other_domain_formats?.length > 0) {
+      const altFormats = data.other_domain_formats
+        .slice(0, 5)
+        .map((f: any) => `${f.format} (${f.confidence})`)
+        .join(', ');
+      fields.push(`Other Formats: ${altFormats}`);
+    }
+
+    // If name was provided, construct the probable email
+    if (firstName && lastName && data.format) {
+      const email = buildEmailFromFormat(data.format, firstName.toLowerCase(), lastName.toLowerCase(), domain);
+      if (email) {
+        fields.push(`\nProbable Email: ${email}`);
+      }
+    }
+
+    return fields.join('\n');
+  } catch (e) {
+    return `ZeroBounce guess format error: ${e.message}`;
+  }
+}
+
+/**
+ * Helper: builds an email from a format pattern and name parts.
+ */
+function buildEmailFromFormat(format: string, first: string, last: string, domain: string): string | null {
+  const f = first.charAt(0); // first initial
+  const l = last.charAt(0);  // last initial
+  const patterns: Record<string, string> = {
+    'first.last': `${first}.${last}`,
+    'first': first,
+    'last': last,
+    'firstlast': `${first}${last}`,
+    'lastfirst': `${last}${first}`,
+    'first.l': `${first}.${l}`,
+    'f.last': `${f}.${last}`,
+    'firstl': `${first}${l}`,
+    'lfirst': `${l}${first}`,
+    'last.first': `${last}.${first}`,
+    'first_last': `${first}_${last}`,
+    'last.f': `${last}.${f}`,
+    'flast': `${f}${last}`,
+    'lastf': `${last}${f}`,
+  };
+
+  const local = patterns[format];
+  return local ? `${local}@${domain}` : null;
+}
+
+/**
+ * Gets remaining ZeroBounce API credits.
+ */
+async function zerobounceGetCredits(): Promise<string> {
+  const apiKey = getZerobounceApiKey();
+  if (!apiKey) {
+    return 'ZeroBounce unavailable: No API key configured.';
+  }
+
+  try {
+    const url = `${ZEROBOUNCE_BASE_URL}/getcredits?api_key=${encodeURIComponent(apiKey)}`;
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    return `ZeroBounce credits remaining: ${data.Credits}`;
+  } catch (e) {
+    return `ZeroBounce credits check error: ${e.message}`;
+  }
 }
 
 // =============================================================

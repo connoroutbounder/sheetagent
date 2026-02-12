@@ -7,10 +7,11 @@
  * - Sheet context (headers, column analysis)
  * - Row-specific data (input values, per-row instructions)
  * 
- * The agent uses THREE tool categories:
+ * The agent uses FOUR tool categories:
  * - 🔵 Claude: reasoning, planning, analysis, writing
  * - 🟢 Perplexity: web search, scraping, live data lookup
  * - 🟣 Apollo.io: contact/company enrichment, email finding, people search
+ * - 🟡 ZeroBounce: email validation, deliverability check, email format guessing
  * 
  * The chat prompt instructs Claude to announce which tool/model
  * will handle each step, so the user sees the routing.
@@ -38,28 +39,34 @@ AVAILABLE CONTEXT:
 AVAILABLE TOOL CATEGORIES:
 - 🟢 Perplexity web tools: web_search, web_scrape, web_research — for live web lookups, finding websites, news, general research
 - 🟣 Apollo.io tools: apollo_enrich_person, apollo_enrich_company, apollo_search_people, apollo_find_email — for B2B contact/company data, email finding, professional enrichment
+- 🟡 ZeroBounce tools: zerobounce_validate, zerobounce_batch_validate, zerobounce_guess_format — for email verification, deliverability checks, email format detection
 - 🔵 Claude (you): reasoning, analysis, summarization, writing, data transformation — no tool call needed`;
 
 const CHAT_SYSTEM_PROMPT = `You are an AI agent builder embedded in a Google Sheets sidebar. You help users create agents that process their spreadsheet data row by row.
 
 You can see the user's active sheet structure — headers, column types, sample data, and which rows need processing.
 
-YOU HAVE THREE TOOL CATEGORIES:
+YOU HAVE FOUR TOOL CATEGORIES:
 - **🔵 Claude** (you) — reasoning, analysis, summarization, writing, classification, data transformation
 - **🟢 Perplexity** — web search, finding URLs, live data lookup, general web research, news, anything requiring fresh internet data
 - **🟣 Apollo.io** — B2B sales intelligence: contact enrichment (name → email, phone, title, LinkedIn), company enrichment (domain → industry, size, revenue, funding, tech stack), people search (find decision-makers by title/company/location), email finding
+- **🟡 ZeroBounce** — email verification and validation: checks if emails are deliverable (valid/invalid/catch-all/disposable), detects email format patterns for domains, and can construct probable emails from name + domain
 
 TOOL ROUTING RULES:
 - Need contact/company enrichment data (emails, phones, titles, company details)? → Use 🟣 Apollo tools
+- Need to verify/validate email addresses? → Use 🟡 ZeroBounce tools
+- Need to guess someone's email from name + domain? → Use 🟡 ZeroBounce guess_format, then validate the result
 - Need general web data (websites, news, reviews, pricing)? → Use 🟢 Perplexity tools
 - Need analysis, writing, classification, formatting? → 🔵 Claude handles it directly
-- Need BOTH enrichment + web research? → Use both: "🟣 Apollo will find the contact's email, then 🟢 Perplexity will research their company's latest news"
+- Need BOTH enrichment + validation? → Chain them: "🟣 Apollo will find the email, then 🟡 ZeroBounce will verify it's deliverable"
 - If data could come from either Apollo or web search, prefer Apollo for B2B data (more structured, faster) and Perplexity for general info
 
 CRITICAL RULES:
 - BE DECISIVE. When the user tells you what they want, BUILD THE AGENT IMMEDIATELY.
 - ALWAYS mention which tool(s)/model(s) will be used and why. Example: "I'll use 🟣 Apollo.io to enrich each contact since we need professional email addresses and titles."
 - If a task needs Apollo.io → set tools to include "apollo_enrich_person", "apollo_enrich_company", "apollo_search_people", or "apollo_find_email"
+- If a task needs email validation → set tools to include "zerobounce_validate" or "zerobounce_batch_validate"
+- If a task needs to guess/construct emails from names → set tools to include "zerobounce_guess_format"
 - If a task needs web data → set tools to include "search" and/or "web_scrape" (these use Perplexity under the hood)
 - If a task is pure analysis/writing → set tools to []
 - If the user's intent is clear (e.g. "find emails for these contacts"), just do it.
@@ -92,6 +99,7 @@ When you're ready (which should usually be your FIRST response), include this JS
 TOOL NAME REFERENCE:
 - Perplexity web tools: "search", "web_scrape", "web_research"
 - Apollo.io tools: "apollo_enrich_person", "apollo_enrich_company", "apollo_search_people", "apollo_find_email"
+- ZeroBounce tools: "zerobounce_validate", "zerobounce_batch_validate", "zerobounce_guess_format", "zerobounce_credits"
 
 IMPORTANT: Include the agent_config block as soon as the user's intent is clear. Do not wait for multiple rounds of confirmation.`;
 
@@ -147,8 +155,9 @@ export function buildRowPrompt(
   // Add model routing context
   const hasWebTools = (config.tools || []).some(t => ['search', 'web_scrape', 'web_research'].includes(t));
   const hasApolloTools = (config.tools || []).some(t => t.startsWith('apollo_'));
+  const hasZerobounceTools = (config.tools || []).some(t => t.startsWith('zerobounce_'));
   
-  if (hasWebTools || hasApolloTools) {
+  if (hasWebTools || hasApolloTools || hasZerobounceTools) {
     system += '\n\nMODEL ROUTING:';
     if (hasWebTools) {
       system += '\n- 🟢 Perplexity web tools available: Use web_search or web_scrape for live web information. Returns accurate, cited results.';
@@ -163,8 +172,20 @@ export function buildRowPrompt(
       system += '\n- Always use company DOMAIN when available (more precise than company name).';
       system += '\n- NEVER enumerate all employees. Always use title/seniority filters to find specific roles.';
     }
+    if (hasZerobounceTools) {
+      system += '\n- 🟡 ZeroBounce tools available. Validates email deliverability and guesses email format patterns.';
+      system += '\n\nZEROBOUNCE BEST PRACTICES:';
+      system += '\n- **Validate an email**: zerobounce_validate({ email: "john@company.com" }) → returns status: valid/invalid/catch-all/unknown';
+      system += '\n- **Guess email format for a domain**: zerobounce_guess_format({ domain: "tesla.com" }) → returns pattern like "first.last"';
+      system += '\n- **Construct + validate**: zerobounce_guess_format({ domain: "tesla.com", first_name: "elon", last_name: "musk" }) → returns probable email, then validate it';
+      system += '\n- Use ZeroBounce AFTER finding emails (from Apollo or elsewhere) to verify deliverability before outputting.';
+      system += '\n- Status meanings: "valid" = safe to send, "invalid" = bounce, "catch-all" = domain accepts all (unverifiable), "do_not_mail" = disposable/role-based';
+    }
     if (hasWebTools && hasApolloTools) {
       system += '\n- Use Apollo.io for structured B2B data (contact info, company firmographics). Use Perplexity for general web info (news, articles, reviews, pricing).';
+    }
+    if (hasApolloTools && hasZerobounceTools) {
+      system += '\n- POWERFUL COMBO: Use 🟣 Apollo to find contacts/emails, then 🟡 ZeroBounce to verify deliverability. Report both the email and its validation status.';
     }
   }
 
@@ -433,6 +454,80 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
             description: 'LinkedIn profile URL (helps with matching)',
           },
         },
+        required: [],
+      },
+    });
+  }
+
+  // ---- 🟡 ZEROBOUNCE TOOLS ----
+
+  if (enabledTools.includes('zerobounce_validate')) {
+    tools.push({
+      name: 'zerobounce_validate',
+      description: 'Validate a single email address using ZeroBounce. Returns deliverability status (valid/invalid/catch-all/abuse/do_not_mail/spamtrap/unknown), SMTP provider, MX records, domain age, and whether it\'s a free email service. Use this to verify an email is real and deliverable before sending.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          email: {
+            type: 'string',
+            description: 'The email address to validate (e.g. "john@company.com")',
+          },
+        },
+        required: ['email'],
+      },
+    });
+  }
+
+  if (enabledTools.includes('zerobounce_batch_validate')) {
+    tools.push({
+      name: 'zerobounce_batch_validate',
+      description: 'Validate multiple email addresses at once using ZeroBounce. Accepts up to 100 emails and returns deliverability status for each. More efficient than validating one at a time for large lists.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          emails: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Array of email addresses to validate (max 100)',
+          },
+        },
+        required: ['emails'],
+      },
+    });
+  }
+
+  if (enabledTools.includes('zerobounce_guess_format')) {
+    tools.push({
+      name: 'zerobounce_guess_format',
+      description: 'Guess the email format pattern for a domain using ZeroBounce (e.g. "first.last@domain.com"). Optionally provide first_name and last_name to get the probable email address for a specific person. Great for constructing email addresses when you know someone\'s name and company domain.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          domain: {
+            type: 'string',
+            description: 'The company domain to check format for (e.g. "tesla.com")',
+          },
+          first_name: {
+            type: 'string',
+            description: 'First name to construct the probable email (optional)',
+          },
+          last_name: {
+            type: 'string',
+            description: 'Last name to construct the probable email (optional)',
+          },
+        },
+        required: ['domain'],
+      },
+    });
+  }
+
+  if (enabledTools.includes('zerobounce_credits')) {
+    tools.push({
+      name: 'zerobounce_credits',
+      description: 'Check remaining ZeroBounce API credits. Use this before large batch operations to ensure sufficient credits.',
+      input_schema: {
+        type: 'object',
+        properties: {},
         required: [],
       },
     });

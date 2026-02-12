@@ -15,7 +15,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { buildChatPrompt, buildRowPrompt, buildToolDefinitions, parseAgentConfig } from '../lib/prompt-builder.ts';
-import { executeToolCalls, setApolloApiKey } from '../lib/tools.ts';
+import { executeToolCalls, setApolloApiKey, setZerobounceApiKey } from '../lib/tools.ts';
 import { SheetsClient } from '../lib/sheets-api.ts';
 import type { ChatRequest, StartRunRequest, StopRunRequest, ChatResponse, AgentConfig, SheetContext, RowData } from '../lib/types.ts';
 
@@ -40,7 +40,7 @@ Deno.serve(async (req) => {
       headers: {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Spreadsheet-Id, X-User-Email, X-Apollo-Api-Key, apikey',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Spreadsheet-Id, X-User-Email, X-Apollo-Api-Key, X-Zerobounce-Api-Key, apikey',
       },
     });
   }
@@ -52,6 +52,8 @@ Deno.serve(async (req) => {
     // Set user-provided external API keys (from sidebar Settings)
     const apolloKey = req.headers.get('X-Apollo-Api-Key');
     if (apolloKey) setApolloApiKey(apolloKey);
+    const zerobounceKey = req.headers.get('X-Zerobounce-Api-Key');
+    if (zerobounceKey) setZerobounceApiKey(zerobounceKey);
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
     const user = await ensureUser(supabase, userEmail);
@@ -377,9 +379,11 @@ async function processBatchAsync(
 
       const hasWebTools = (config.tools || []).some(t => ['search', 'web_scrape', 'web_research'].includes(t));
       const hasApolloTools = (config.tools || []).some(t => t.startsWith('apollo_'));
+      const hasZerobounceTools = (config.tools || []).some(t => t.startsWith('zerobounce_'));
       const modelParts = [MODEL];
       if (hasWebTools) modelParts.push('perplexity/sonar');
       if (hasApolloTools) modelParts.push('apollo.io');
+      if (hasZerobounceTools) modelParts.push('zerobounce');
       const modelsUsed = modelParts.join(' + ');
 
       await supabase
