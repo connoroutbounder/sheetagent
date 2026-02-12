@@ -155,6 +155,13 @@ export function buildRowPrompt(
     }
     if (hasApolloTools) {
       system += '\n- 🟣 Apollo.io tools available: Use apollo_enrich_person, apollo_enrich_company, apollo_search_people, or apollo_find_email for B2B contact/company data. Returns structured professional data (emails, titles, phone numbers, company details).';
+      system += '\n\nAPOLLO.io BEST PRACTICES:';
+      system += '\n- To find a specific role (e.g. CEO, CTO, VP Sales), use apollo_search_people with person_titles AND person_seniorities filters. NEVER try to enumerate all employees.';
+      system += '\n- Example: To find CEO of Tesla → apollo_search_people({ person_titles: ["CEO"], organization_domains: ["tesla.com"], person_seniorities: ["c_suite"], per_page: 1 })';
+      system += '\n- To find email for a known person → apollo_find_email({ first_name: "Elon", last_name: "Musk", domain: "tesla.com" })';
+      system += '\n- To enrich a company → apollo_enrich_company({ domain: "tesla.com" })';
+      system += '\n- Always use the company domain when available (more precise than company name).';
+      system += '\n- If the user asks for "CEO email" or "CTO email", use apollo_search_people with title filters first, then extract the email from results.';
     }
     if (hasWebTools && hasApolloTools) {
       system += '\n- Use Apollo.io for structured B2B data (contact info, company firmographics). Use Perplexity for general web info (news, articles, reviews, pricing).';
@@ -347,24 +354,24 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
   if (enabledTools.includes('apollo_search_people')) {
     tools.push({
       name: 'apollo_search_people',
-      description: 'Search for people in Apollo.io\'s database. Find decision-makers, leads, or contacts matching specific criteria like job title, company, location, seniority level. Returns a list of matching professionals with their details.',
+      description: 'Search for people in Apollo.io\'s database using FILTERS. This is the best way to find a specific role at a company (e.g. "find the CEO of Tesla"). ALWAYS use person_titles + organization_domains/organization_names filters to narrow results. Set per_page to 1-3 when looking for a specific role. Returns matching professionals with name, title, email, phone, and LinkedIn.',
       input_schema: {
         type: 'object',
         properties: {
           person_titles: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Job titles to search for (e.g. ["CEO", "CTO", "VP Sales"])',
+            description: 'REQUIRED for role searches. Job titles to filter by (e.g. ["CEO"], ["CTO", "Chief Technology Officer"], ["VP Sales", "Vice President of Sales"])',
           },
           organization_domains: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Company domains to search within (e.g. ["apollo.io", "google.com"])',
+            description: 'Company domains to search within (e.g. ["tesla.com"]). Preferred over organization_names.',
           },
           organization_names: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Company names to search within',
+            description: 'Company names to search within (use if domain is not available)',
           },
           person_locations: {
             type: 'array',
@@ -374,7 +381,7 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
           person_seniorities: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Seniority levels (e.g. ["c_suite", "vp", "director", "manager"])',
+            description: 'Seniority filter. Values: "c_suite", "vp", "director", "manager", "senior", "entry". Use "c_suite" for CEO/CTO/CFO/COO searches.',
           },
           q_keywords: {
             type: 'string',
@@ -382,7 +389,7 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
           },
           per_page: {
             type: 'number',
-            description: 'Number of results (1-25, default 10)',
+            description: 'Number of results to return. Use 1-3 for specific role lookups, up to 25 for broad searches. Default: 3.',
           },
         },
         required: [],

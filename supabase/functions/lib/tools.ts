@@ -486,7 +486,7 @@ async function apolloSearchPeople(input: {
 
   const body: Record<string, any> = {
     page: input.page || 1,
-    per_page: Math.min(input.per_page || 10, 25), // Cap at 25
+    per_page: Math.min(input.per_page || 3, 25), // Default 3 for targeted lookups, cap at 25
   };
 
   if (input.person_titles) body.person_titles = input.person_titles;
