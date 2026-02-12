@@ -645,19 +645,31 @@
         conversationHistory.push({ role: 'assistant', content: response.message });
       }
 
-      // Agent wants to run a job
+      // Agent wants to run a job (already started by backend)
       if (response.jobId) {
         currentJobId = response.jobId;
         startProgressTracking(response);
       }
 
-      // Agent suggests saving itself
-      if (response.suggestSave && response.agentConfig) {
-        addMessage('agent', 
-          'Would you like to save this as a reusable agent? ' +
-          '<strong>' + (response.agentConfig.name || 'Untitled Agent') + '</strong> — ' +
-          'you can run it on any sheet with a similar structure.'
-        );
+      // Agent returned a config but job hasn't started yet — auto-start it
+      if (response.agentConfig && response.agentConfig.action === 'start_run' && !response.jobId) {
+        addMessage('system', '⚡ Starting agent run...');
+        google.script.run
+          .withSuccessHandler(function(runResponse) {
+            if (runResponse && runResponse.jobId) {
+              currentJobId = runResponse.jobId;
+              startProgressTracking(runResponse);
+              addMessage('agent', 'Running on ' + (runResponse.totalRows || '?') + ' rows...');
+            } else if (runResponse && runResponse.error) {
+              addMessage('error', runResponse.error);
+            } else if (runResponse && runResponse.message) {
+              addMessage('agent', runResponse.message);
+            }
+          })
+          .withFailureHandler(function(err) {
+            addMessage('error', 'Failed to start run: ' + err.message);
+          })
+          .startAgentRun(response.agentConfig);
       }
     }
 
