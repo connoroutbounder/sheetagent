@@ -2,14 +2,15 @@
  * ============================================================
  * agent-run/index.ts — Agent Orchestrator Edge Function
  * ============================================================
- * Handles three actions:
- * 1. "chat"      — Conversational planning with the user
- * 2. "start_run" — Kicks off row-by-row processing
- * 3. "stop"      — Stops a running job
+ * Handles four actions:
+ * 1. "chat"         — Conversational planning with the user
+ * 2. "start_run"    — Kicks off row-by-row processing (first batch)
+ * 3. "continue_run" — Processes next batch of rows
+ * 4. "stop"         — Stops a running job
  * 
- * The chat phase uses Claude to understand the user's intent
- * and configure the agent. The run phase processes rows
- * sequentially, writing results back to the sheet.
+ * Rows are processed in batches of BATCH_SIZE to stay within
+ * the Supabase Edge Function timeout. The sidebar chains
+ * batches automatically — unlimited rows.
  */
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -26,20 +27,20 @@ const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY') || '';
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || '';
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 const MODEL = 'claude-sonnet-4-5-20250929';
-const MAX_TOOL_ROUNDS = 5; // Max tool-use loops per row
+const MAX_TOOL_ROUNDS = 5;
+const BATCH_SIZE = 25; // Rows per batch — fits within ~150s timeout
 
 // =============================================================
 // MAIN HANDLER
 // =============================================================
 
 Deno.serve(async (req) => {
-  // CORS headers
   if (req.method === 'OPTIONS') {
     return new Response(null, {
       headers: {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Spreadsheet-Id, X-User-Email',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Spreadsheet-Id, X-User-Email, apikey',
       },
     });
   }
@@ -48,10 +49,7 @@ Deno.serve(async (req) => {
     const body = await req.json();
     const userEmail = req.headers.get('X-User-Email') || body.userEmail;
 
-    // Initialize Supabase client
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-
-    // Ensure user exists
     const user = await ensureUser(supabase, userEmail);
 
     switch (body.action) {
@@ -60,6 +58,9 @@ Deno.serve(async (req) => {
 
       case 'start_run':
         return jsonResponse(await handleStartRun(supabase, body as StartRunRequest, user));
+
+      case 'continue_run':
+        return jsonResponse(await handleContinueRun(supabase, body));
 
       case 'stop':
         return jsonResponse(await handleStop(supabase, body as StopRunRequest));
@@ -77,15 +78,9 @@ Deno.serve(async (req) => {
 // CHAT HANDLER
 // =============================================================
 
-/**
- * Handles the conversational planning phase.
- * The user describes what they want, Claude analyzes the sheet
- * and proposes an agent configuration.
- */
 async function handleChat(request: ChatRequest, user: any): Promise<ChatResponse> {
   const systemPrompt = buildChatPrompt(request.sheetContext);
 
-  // Build messages array
   const messages = [
     ...(request.conversationHistory || []).map(m => ({
       role: m.role as 'user' | 'assistant',
@@ -94,26 +89,21 @@ async function handleChat(request: ChatRequest, user: any): Promise<ChatResponse
     { role: 'user' as const, content: request.message },
   ];
 
-  // Call Claude
   const response = await callClaude(systemPrompt, messages);
 
   if (!response) {
     return { error: 'Failed to get response from AI' };
   }
 
-  // Extract text response
   const textContent = response.content
     .filter((c: any) => c.type === 'text')
     .map((c: any) => c.text)
     .join('\n');
 
-  // Check if Claude included an agent_config block (ready to run)
   const agentConfig = parseAgentConfig(textContent);
 
   if (agentConfig && agentConfig.action === 'start_run') {
-    // Clean the config block out of the message
     const cleanMessage = textContent.replace(/```agent_config[\s\S]*?```/g, '').trim();
-
     return {
       message: cleanMessage || 'Ready to start processing!',
       agentConfig,
@@ -125,13 +115,9 @@ async function handleChat(request: ChatRequest, user: any): Promise<ChatResponse
 }
 
 // =============================================================
-// RUN HANDLER
+// RUN HANDLER — Start
 // =============================================================
 
-/**
- * Starts an agent run. Creates a job record in the database,
- * then processes rows sequentially in the background.
- */
 async function handleStartRun(
   supabase: any,
   request: StartRunRequest,
@@ -139,14 +125,13 @@ async function handleStartRun(
 ): Promise<ChatResponse> {
   const { agentConfig, sheetContext, spreadsheetId, sheetName } = request;
 
-  // Determine which rows to process
   const rowsToProcess = getRowsToProcess(sheetContext, agentConfig);
 
   if (rowsToProcess.length === 0) {
     return { message: 'No rows to process. All rows either have output or are empty.' };
   }
 
-  // Save agent if it doesn't exist yet
+  // Save agent if new
   let agentId = agentConfig.id;
   if (!agentId && agentConfig.name) {
     const { data: agent } = await supabase
@@ -167,7 +152,7 @@ async function handleStartRun(
     if (agent) agentId = agent.id;
   }
 
-  // Create run record
+  // Create run record with ALL rows
   const { data: run, error: runError } = await supabase
     .from('agent_runs')
     .insert({
@@ -187,8 +172,8 @@ async function handleStartRun(
     return { error: 'Failed to create run: ' + (runError?.message || 'Unknown') };
   }
 
-  // Create run_rows records
-  const rowRecords = rowsToProcess.map((rowNum, idx) => ({
+  // Create ALL run_rows records upfront
+  const rowRecords = rowsToProcess.map((rowNum) => ({
     run_id: run.id,
     row_number: rowNum,
     input_data: getSampleRowData(sheetContext, rowNum),
@@ -198,29 +183,122 @@ async function handleStartRun(
 
   await supabase.from('run_rows').insert(rowRecords);
 
-  // Process rows in background (non-blocking)
-  processRowsAsync(supabase, run.id, agentConfig, sheetContext, spreadsheetId, sheetName, rowsToProcess);
+  // Process FIRST BATCH in background
+  const firstBatch = rowsToProcess.slice(0, BATCH_SIZE);
+  processBatchAsync(supabase, run.id, agentConfig, sheetContext, spreadsheetId, sheetName, firstBatch);
 
   return {
-    message: `Starting agent run on ${rowsToProcess.length} rows...`,
+    message: `Starting agent run on ${rowsToProcess.length} rows (batch 1 of ${Math.ceil(rowsToProcess.length / BATCH_SIZE)})...`,
     jobId: run.id,
     totalRows: rowsToProcess.length,
     label: agentConfig.name || 'Processing rows',
   };
 }
 
+// =============================================================
+// RUN HANDLER — Continue (next batch)
+// =============================================================
+
+async function handleContinueRun(
+  supabase: any,
+  body: any
+): Promise<ChatResponse> {
+  const { jobId, sheetContext, spreadsheetId, sheetName } = body;
+
+  if (!jobId) {
+    return { error: 'Missing jobId' };
+  }
+
+  // Get the run record
+  const { data: run } = await supabase
+    .from('agent_runs')
+    .select('*')
+    .eq('id', jobId)
+    .single();
+
+  if (!run) {
+    return { error: 'Run not found' };
+  }
+
+  if (run.status === 'stopped') {
+    return { message: 'Run was stopped' };
+  }
+
+  // Get all pending rows for this run
+  const { data: pendingRows } = await supabase
+    .from('run_rows')
+    .select('row_number')
+    .eq('run_id', jobId)
+    .eq('status', 'pending')
+    .order('row_number', { ascending: true })
+    .limit(BATCH_SIZE);
+
+  if (!pendingRows || pendingRows.length === 0) {
+    // No more rows — mark complete
+    await supabase
+      .from('agent_runs')
+      .update({
+        status: 'complete',
+        completed_at: new Date().toISOString(),
+      })
+      .eq('id', jobId);
+
+    return { message: 'All rows processed' };
+  }
+
+  const batchRows = pendingRows.map((r: any) => r.row_number);
+  const config = run.config as AgentConfig;
+
+  // Use provided sheetContext or reconstruct from run data
+  const ctx = sheetContext || { 
+    headers: [], 
+    columns: [], 
+    sampleRows: [],
+    rowCount: run.total_rows, 
+    columnCount: 0,
+    sheetName: run.sheet_name,
+  };
+
+  // Update run status back to running
+  await supabase
+    .from('agent_runs')
+    .update({ status: 'running' })
+    .eq('id', jobId);
+
+  // Process this batch in background
+  processBatchAsync(supabase, jobId, config, ctx, spreadsheetId || run.spreadsheet_id, sheetName || run.sheet_name, batchRows);
+
+  const totalPending = pendingRows.length;
+  const batchNum = Math.ceil((run.total_rows - totalPending) / BATCH_SIZE) + 1;
+  const totalBatches = Math.ceil(run.total_rows / BATCH_SIZE);
+
+  return {
+    message: `Processing batch ${batchNum} of ${totalBatches} (${batchRows.length} rows)...`,
+    jobId,
+    continuing: true,
+  };
+}
+
+// =============================================================
+// BATCH PROCESSOR
+// =============================================================
+
 /**
- * Processes rows one by one. This runs in the background after
+ * Processes a batch of rows. Runs in the background after
  * the HTTP response has been sent.
+ * 
+ * When the batch finishes, marks the run as:
+ * - "batch_complete" if there are more pending rows
+ * - "complete" if all rows are done
  */
-async function processRowsAsync(
+async function processBatchAsync(
   supabase: any,
   runId: string,
   config: AgentConfig,
   sheetContext: SheetContext,
   spreadsheetId: string,
   sheetName: string,
-  rows: number[]
+  batchRows: number[]
 ) {
   // Try to initialize Sheets client for direct write-back (optional)
   let sheetsClient: SheetsClient | null = null;
@@ -230,14 +308,22 @@ async function processRowsAsync(
       sheetsClient = new SheetsClient({ spreadsheetId, serviceAccountKey });
     }
   } catch (e) {
-    console.warn('No service account configured, results will be written via Apps Script relay');
+    // No service account — sidebar handles writes
   }
 
   const toolDefinitions = buildToolDefinitions(config);
-  let completedRows = 0;
-  let errorRows = 0;
 
-  for (const rowNumber of rows) {
+  // Get current progress
+  const { data: runData } = await supabase
+    .from('agent_runs')
+    .select('completed_rows, error_rows')
+    .eq('id', runId)
+    .single();
+
+  let completedRows = runData?.completed_rows || 0;
+  let errorRows = runData?.error_rows || 0;
+
+  for (const rowNumber of batchRows) {
     // Check if run was stopped
     const { data: run } = await supabase
       .from('agent_runs')
@@ -250,9 +336,7 @@ async function processRowsAsync(
     }
 
     // Build row data from cached sheet context
-    let rowData: RowData;
-    const sampleData = getSampleRowData(sheetContext, rowNumber);
-    rowData = { _rowNumber: rowNumber, ...sampleData };
+    let rowData: RowData = { _rowNumber: rowNumber, ...getSampleRowData(sheetContext, rowNumber) };
 
     // Try to get fresh data from sheet if we have a sheets client
     if (sheetsClient) {
@@ -264,17 +348,15 @@ async function processRowsAsync(
           rowData[h.name] = values[i] || '';
         });
       } catch (e) {
-        // Use cached data (already set above)
+        // Use cached data
       }
     }
 
-    // Get per-row instruction
     if (config.instructionColumn) {
       rowData._instruction = rowData[config.instructionColumn] || config.defaultInstruction;
     }
 
-    // Update status: processing
-    const companyName = rowData[sheetContext.headers[0]?.name] || `Row ${rowNumber}`;
+    const companyName = rowData[sheetContext.headers?.[0]?.name] || `Row ${rowNumber}`;
     await supabase
       .from('agent_runs')
       .update({
@@ -283,15 +365,12 @@ async function processRowsAsync(
       })
       .eq('id', runId);
 
-    // Process the row with Claude
     try {
       const result = await processRow(config, rowData, sheetContext, toolDefinitions);
 
-      // Determine models used for this row
       const hasWebTools = (config.tools || []).some(t => ['search', 'web_scrape', 'web_research'].includes(t));
       const modelsUsed = hasWebTools ? `${MODEL} + perplexity/sonar` : MODEL;
 
-      // Store result in database (always works)
       await supabase
         .from('run_rows')
         .update({
@@ -308,7 +387,6 @@ async function processRowsAsync(
         .eq('run_id', runId)
         .eq('row_number', rowNumber);
 
-      // Try direct sheet write if available
       if (sheetsClient) {
         try {
           await sheetsClient.writeRowResult(
@@ -322,7 +400,7 @@ async function processRowsAsync(
             .eq('run_id', runId)
             .eq('row_number', rowNumber);
         } catch (e) {
-          console.warn(`Sheet write failed for row ${rowNumber}, sidebar will handle it`);
+          // Sidebar handles write
         }
       }
 
@@ -342,7 +420,7 @@ async function processRowsAsync(
         .eq('row_number', rowNumber);
     }
 
-    // Update progress
+    // Update progress after each row
     await supabase
       .from('agent_runs')
       .update({
@@ -352,26 +430,41 @@ async function processRowsAsync(
       .eq('id', runId);
   }
 
-  // Mark run as complete
-  await supabase
-    .from('agent_runs')
-    .update({
-      status: 'complete',
-      completed_rows: completedRows,
-      error_rows: errorRows,
-      completed_at: new Date().toISOString(),
-    })
-    .eq('id', runId);
+  // Check if there are more pending rows
+  const { count } = await supabase
+    .from('run_rows')
+    .select('id', { count: 'exact', head: true })
+    .eq('run_id', runId)
+    .eq('status', 'pending');
+
+  if (count && count > 0) {
+    // More rows to process — signal sidebar to continue
+    await supabase
+      .from('agent_runs')
+      .update({
+        status: 'batch_complete',
+        completed_rows: completedRows,
+        error_rows: errorRows,
+      })
+      .eq('id', runId);
+  } else {
+    // All done
+    await supabase
+      .from('agent_runs')
+      .update({
+        status: 'complete',
+        completed_rows: completedRows,
+        error_rows: errorRows,
+        completed_at: new Date().toISOString(),
+      })
+      .eq('id', runId);
+  }
 }
 
 // =============================================================
 // ROW PROCESSOR
 // =============================================================
 
-/**
- * Processes a single row using Claude with tool access.
- * Handles the agentic loop: prompt → response → tool calls → repeat.
- */
 async function processRow(
   config: AgentConfig,
   rowData: RowData,
@@ -392,7 +485,6 @@ async function processRow(
   let totalOutputTokens = 0;
   let finalOutput = '';
 
-  // Agentic loop (tool use rounds)
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const response = await callClaude(system, messages, toolDefinitions.length > 0 ? toolDefinitions : undefined);
 
@@ -403,16 +495,13 @@ async function processRow(
     totalInputTokens += response.usage?.input_tokens || 0;
     totalOutputTokens += response.usage?.output_tokens || 0;
 
-    // Check for tool calls
     const toolUseBlocks = response.content.filter((c: any) => c.type === 'tool_use');
 
     if (toolUseBlocks.length > 0) {
-      // Execute tools
       const toolResults = await executeToolCalls(
         toolUseBlocks.map((b: any) => ({ id: b.id, name: b.name, input: b.input }))
       );
 
-      // Add assistant response and tool results to messages
       messages.push({ role: 'assistant', content: response.content });
       messages.push({
         role: 'user',
@@ -424,14 +513,12 @@ async function processRow(
         })),
       });
     } else {
-      // No tool calls — extract the final text output
       const textBlocks = response.content.filter((c: any) => c.type === 'text');
       finalOutput = textBlocks.map((c: any) => c.text).join('\n').trim();
       break;
     }
   }
 
-  // Calculate cost (Sonnet 4.5: $3/M input, $15/M output)
   const cost = (totalInputTokens * 3 + totalOutputTokens * 15) / 1_000_000;
 
   return {
@@ -452,7 +539,7 @@ async function handleStop(supabase: any, request: StopRunRequest) {
     .from('agent_runs')
     .update({ status: 'stopped', completed_at: new Date().toISOString() })
     .eq('id', request.jobId)
-    .eq('status', 'running');
+    .in('status', ['running', 'batch_complete']);
 
   if (error) {
     return { error: 'Failed to stop run: ' + error.message };
@@ -504,7 +591,6 @@ async function callClaude(
 // =============================================================
 
 async function ensureUser(supabase: any, email: string) {
-  // Try to find existing user
   let { data: user } = await supabase
     .from('agent_users')
     .select('*')
@@ -512,7 +598,6 @@ async function ensureUser(supabase: any, email: string) {
     .single();
 
   if (!user) {
-    // Create new user
     const { data: newUser, error } = await supabase
       .from('agent_users')
       .insert({ email })
@@ -531,7 +616,6 @@ function getRowsToProcess(sheetContext: SheetContext, config: AgentConfig): numb
     return sheetContext.emptyOutputRows.rows;
   }
 
-  // Process all data rows
   const rows: number[] = [];
   for (let i = 2; i <= sheetContext.rowCount + 1; i++) {
     rows.push(i);

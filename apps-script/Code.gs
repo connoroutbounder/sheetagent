@@ -202,12 +202,31 @@ function getJobStatus(jobId, ackRows) {
     
     if (writtenRows.length > 0) {
       SpreadsheetApp.flush();
-      // Acknowledge written rows so backend marks them as written
       status._ackRows = writtenRows;
     }
   }
   
   return status;
+}
+
+/**
+ * Continues processing the next batch of rows for a job.
+ * Called by the sidebar when it detects 'batch_complete' status.
+ * Sends fresh sheet context so the backend has current row data.
+ */
+function continueAgentRun(jobId) {
+  var context = SheetContext.capture();
+  
+  var payload = {
+    action: 'continue_run',
+    jobId: jobId,
+    sheetContext: context,
+    spreadsheetId: SpreadsheetApp.getActiveSpreadsheet().getId(),
+    sheetName: SpreadsheetApp.getActiveSheet().getName(),
+    userEmail: getUserEmail(),
+  };
+  
+  return ApiClient.post('/agent-run', payload);
 }
 
 /**

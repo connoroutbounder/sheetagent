@@ -721,6 +721,25 @@
           (status.currentCompany || 'Processing...') + '</span>';
       }
 
+      // Batch complete — auto-chain next batch
+      if (status.status === 'batch_complete') {
+        document.getElementById('progressCurrent').innerHTML = 
+          '<div class="spinner"></div><span>Starting next batch...</span>';
+        
+        google.script.run
+          .withSuccessHandler(function(resp) {
+            if (resp && resp.error) {
+              addMessage('error', 'Batch error: ' + resp.error);
+            }
+            // Polling continues — next batch is running
+          })
+          .withFailureHandler(function(err) {
+            addMessage('error', 'Failed to continue: ' + err.message);
+          })
+          .continueAgentRun(currentJobId);
+        return; // Keep polling
+      }
+
       // Job complete
       if (status.status === 'complete' || status.status === 'stopped') {
         // Do one final ack if needed

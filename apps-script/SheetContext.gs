@@ -48,7 +48,8 @@ const SheetContext = {
     
     const dataRows = values.slice(1);
     const columns = this._analyzeColumns(headers, dataRows);
-    const sampleRows = this._getSampleRows(headers, dataRows, 5);
+    // Send ALL row data so the backend has input for every row in every batch
+    const sampleRows = this._getSampleRows(headers, dataRows, dataRows.length);
     const emptyOutputRows = this._findEmptyOutputRows(headers, dataRows, columns);
     
     return {
@@ -236,7 +237,7 @@ const SheetContext = {
     
     return {
       count: emptyRows.length,
-      rows: emptyRows.slice(0, 100), // Cap to prevent huge payloads
+      rows: emptyRows, // No cap — batching handles large row counts
       outputColumn: outputCols[0].letter,
     };
   },
