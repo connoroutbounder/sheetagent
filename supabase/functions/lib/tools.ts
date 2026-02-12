@@ -50,6 +50,33 @@ const ZEROBOUNCE_BASE_URL = 'https://api.zerobounce.net/v2';
 let _apolloApiKey = Deno.env.get('APOLLO_API_KEY') || '';
 let _zerobounceApiKey = Deno.env.get('ZEROBOUNCE_API_KEY') || '';
 
+// =============================================================
+// CACHED LIST ENTRIES
+// =============================================================
+// When apolloGetListEntries fetches data, it stores the full dataset
+// here so handleChat can construct bulk_write without Claude having
+// to enumerate every entry (which fails at scale).
+
+interface CachedListEntries {
+  listName: string;
+  type: 'contacts' | 'accounts';
+  entries: Array<Record<string, string>>;
+  totalCount: number;
+}
+
+let _cachedListEntries: CachedListEntries | null = null;
+
+/**
+ * Returns and clears the cached list entries from the last
+ * apolloGetListEntries call. Used by handleChat to construct
+ * bulk_write responses for large datasets.
+ */
+export function getCachedListEntries(): CachedListEntries | null {
+  const result = _cachedListEntries;
+  _cachedListEntries = null;
+  return result;
+}
+
 /**
  * Sets the Apollo API key for the current request.
  */
@@ -866,9 +893,16 @@ async function apolloFindListByName(listName: string): Promise<any | null> {
 }
 
 /**
- * Fetches entries (accounts or contacts) FROM an Apollo list.
- * Given a list name, finds the list, determines its type, and
- * returns all entries with their key fields.
+ * Fetches ALL entries (accounts or contacts) FROM an Apollo list.
+ * Auto-paginates through all pages (100 per page, up to 5000 entries).
+ * 
+ * The full dataset is cached in _cachedListEntries so that handleChat
+ * can construct bulk_write responses without Claude having to enumerate
+ * every entry (which fails at scale with 255+ entries).
+ * 
+ * Returns a compact SUMMARY to Claude (count + 5 samples), not the
+ * full dataset. Claude then produces a lightweight bulk_write block
+ * specifying column→field mapping, and the server fills in the rows.
  */
 async function apolloGetListEntries(input: {
   list_name: string;
@@ -886,70 +920,122 @@ async function apolloGetListEntries(input: {
       return `List "${input.list_name}" not found. Use apollo_get_lists with a search term to find it.`;
     }
 
-    const perPage = Math.min(input.per_page || 25, 100);
-    const page = input.page || 1;
+    const PER_PAGE = 100;  // Apollo max
+    const MAX_PAGES = 50;  // Safety: 5000 entries max
+    const allEntries: Array<Record<string, string>> = [];
+    let totalEntries = 0;
+    let page = 1;
 
-    // Step 2: Fetch entries based on list modality
+    // Step 2: Auto-paginate through ALL pages
     if (list.modality === 'accounts') {
-      const data = await apolloRequest('/v1/accounts/search', {
-        label_ids: [list.id],
-        per_page: perPage,
-        page: page,
-      });
+      while (page <= MAX_PAGES) {
+        const data = await apolloRequest('/v1/accounts/search', {
+          label_ids: [list.id],
+          per_page: PER_PAGE,
+          page,
+        });
 
-      const accounts = data.accounts || [];
-      const total = data.pagination?.total_entries || accounts.length;
+        const accounts = data.accounts || [];
+        if (page === 1) {
+          totalEntries = data.pagination?.total_entries || 0;
+        }
 
-      if (accounts.length === 0) {
-        return `List "${list.name}" exists but has no accounts.`;
+        if (accounts.length === 0) break;
+
+        for (const a of accounts) {
+          allEntries.push({
+            name: a.name || 'Unknown',
+            domain: a.primary_domain || a.domain || (a.website_url ? stripToDomain(a.website_url) : ''),
+            website: a.website_url || '',
+            industry: a.industry || '',
+            employees: String(a.estimated_num_employees || ''),
+          });
+        }
+
+        if (accounts.length < PER_PAGE) break;
+        page++;
       }
-
-      let result = `🏢 "${list.name}" — ${total} accounts (showing page ${page}):\n\n`;
-      for (const a of accounts) {
-        result += `• ${a.name || 'Unknown'}`;
-        if (a.domain || a.primary_domain) result += ` — ${a.primary_domain || a.domain}`;
-        if (a.industry) result += ` | Industry: ${a.industry}`;
-        if (a.estimated_num_employees) result += ` | Employees: ${a.estimated_num_employees}`;
-        if (a.website_url) result += ` | Web: ${a.website_url}`;
-        result += '\n';
-      }
-
-      if (total > page * perPage) {
-        result += `\n(Page ${page} of ${Math.ceil(total / perPage)}. Use page: ${page + 1} to see more.)`;
-      }
-
-      return truncateResult(result, 4000);
     } else {
-      // Contacts list — use mixed_people search with label
-      const data = await apolloRequest('/api/v1/mixed_people/api_search', {
-        label_ids: [list.id],
-        per_page: perPage,
-        page: page,
-      });
+      // Contacts list
+      while (page <= MAX_PAGES) {
+        const data = await apolloRequest('/api/v1/mixed_people/api_search', {
+          label_ids: [list.id],
+          per_page: PER_PAGE,
+          page,
+        });
 
-      const people = data.people || [];
-      const total = data.pagination?.total_entries || people.length;
+        const people = data.people || [];
+        if (page === 1) {
+          totalEntries = data.pagination?.total_entries || 0;
+        }
 
-      if (people.length === 0) {
-        return `List "${list.name}" exists but has no contacts.`;
+        if (people.length === 0) break;
+
+        for (const p of people) {
+          allEntries.push({
+            name: [p.first_name, p.last_name].filter(Boolean).join(' ') || 'Unknown',
+            email: p.email || '',
+            title: p.title || '',
+            company: p.organization?.name || '',
+            domain: p.organization?.primary_domain || '',
+          });
+        }
+
+        if (people.length < PER_PAGE) break;
+        page++;
       }
-
-      let result = `📋 "${list.name}" — ${total} contacts (showing page ${page}):\n\n`;
-      for (const p of people) {
-        const name = [p.first_name, p.last_name].filter(Boolean).join(' ') || 'Unknown';
-        result += `• ${name}`;
-        if (p.title) result += ` — ${p.title}`;
-        if (p.email) result += ` | ${p.email}`;
-        if (p.organization?.name) result += ` | ${p.organization.name}`;
-        result += '\n';
-      }
-
-      if (total > page * perPage) {
-        result += `\n(Page ${page} of ${Math.ceil(total / perPage)}. Use page: ${page + 1} to see more.)`;
-      }
-
-      return truncateResult(result, 4000);
     }
+
+    const fetchedCount = allEntries.length;
+    const total = totalEntries || fetchedCount;
+
+    if (fetchedCount === 0) {
+      return `List "${list.name}" exists but has no entries.`;
+    }
+
+    // Step 3: Cache the FULL dataset for handleChat to use in bulk_write
+    _cachedListEntries = {
+      listName: list.name,
+      type: list.modality as 'contacts' | 'accounts',
+      entries: allEntries,
+      totalCount: total,
+    };
+
+    // Step 4: Return a compact SUMMARY to Claude (not all 255+ entries)
+    const typeLabel = list.modality === 'accounts' ? 'companies' : 'contacts';
+    let summary = `✅ Fetched all ${fetchedCount} ${typeLabel} from list "${list.name}"`;
+    if (total > fetchedCount) {
+      summary += ` (${total} total in list)`;
+    }
+    summary += '.\n\n';
+
+    // Show first 5 as samples
+    const sampleCount = Math.min(5, fetchedCount);
+    summary += `Sample entries (${sampleCount} of ${fetchedCount}):\n`;
+    for (let i = 0; i < sampleCount; i++) {
+      const e = allEntries[i];
+      if (list.modality === 'accounts') {
+        summary += `• ${e.name} — ${e.domain || 'no domain'}`;
+        if (e.industry) summary += ` | ${e.industry}`;
+        summary += '\n';
+      } else {
+        summary += `• ${e.name}`;
+        if (e.email) summary += ` — ${e.email}`;
+        if (e.title) summary += ` (${e.title})`;
+        if (e.company) summary += ` at ${e.company}`;
+        summary += '\n';
+      }
+    }
+
+    // Available fields for Claude's reference
+    if (list.modality === 'accounts') {
+      summary += `\nAvailable fields: name, domain, website, industry, employees`;
+    } else {
+      summary += `\nAvailable fields: name, email, title, company, domain`;
+    }
+    summary += `\n\n[Dataset cached — respond with bulk_write using source: "apollo_list" and a fields mapping to write all ${fetchedCount} entries to the sheet]`;
+
+    return summary;
   } catch (e) {
     return `Apollo get list entries error: ${e.message}`;
   }

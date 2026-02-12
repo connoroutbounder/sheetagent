@@ -105,30 +105,45 @@ Use this when the user wants to process/enrich/transform rows already in the she
 
 **FORMAT 2: bulk_write** — For IMPORTING external data INTO the sheet.
 Use this when the user wants to pull data from an external source (like an Apollo list) and populate the sheet.
-The data will be written starting at the FIRST EMPTY ROW after existing data. Each array in "rows" is one sheet row.
+The data will be written starting at the FIRST EMPTY ROW after existing data.
+
+**For Apollo list imports (recommended for large lists):**
+After calling apollo_get_list_entries, the full dataset is cached server-side. You just need to specify which fields go in which columns:
+\`\`\`bulk_write
+{
+  "source": "apollo_list",
+  "columns": ["A", "B"],
+  "fields": ["name", "domain"]
+}
+\`\`\`
+Available fields for account lists: name, domain, website, industry, employees
+Available fields for contact lists: name, email, title, company, domain
+
+**For small/manual datasets (non-Apollo):**
 \`\`\`bulk_write
 {
   "columns": ["A", "B"],
   "rows": [
-    ["Company Name 1", "https://www.example1.com"],
-    ["Company Name 2", "https://www.example2.com"]
+    ["Company Name 1", "website1.com"],
+    ["Company Name 2", "website2.com"]
   ]
 }
 \`\`\`
 
 WHEN TO USE WHICH FORMAT:
 - "Find CEO emails for each company" → agent_config (processes existing rows)
-- "Pull companies from my Apollo list" → Call apollo_get_list_entries tool, then bulk_write the results
+- "Pull companies from my Apollo list" → Call apollo_get_list_entries tool, then bulk_write with source: "apollo_list"
 - "Add these companies to an Apollo list" → agent_config with apollo_add_account_to_list tool
 - "Enrich the website for each company" → agent_config (processes existing rows)
-- "Import contacts from Apollo list X into column A and B" → Call tool, then bulk_write
+- "Import contacts from Apollo list X into column A and B" → Call apollo_get_list_entries, then bulk_write with source: "apollo_list"
 
 IMPORTANT FOR bulk_write:
 - You have access to Apollo tools during this chat. CALL THEM to fetch data before writing.
 - When the user says "pull from list X", call apollo_get_list_entries({ list_name: "X" }) to get the data.
-- Then format the results as a bulk_write block, mapping fields to the correct columns.
+- After the tool returns, respond with a bulk_write block. For Apollo data, ALWAYS use source: "apollo_list" with a fields mapping — do NOT try to enumerate all rows yourself. The server will populate rows from the cached data.
 - The user's sheet may already have data — bulk_write automatically appends after the last row.
 - Match the columns the user specifies (e.g. "column A and B" → columns: ["A", "B"]).
+- Map the right fields to the right columns (e.g. "names and websites" → fields: ["name", "domain"]).
 
 TOOL NAME REFERENCE:
 - Perplexity web tools: "search", "web_scrape", "web_research"
@@ -525,21 +540,13 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
   if (enabledTools.includes('apollo_get_list_entries')) {
     tools.push({
       name: 'apollo_get_list_entries',
-      description: 'Fetch companies or contacts FROM an Apollo.io list. Given a list name, finds the list and returns all its entries with key fields (name, domain, industry, employees for accounts; name, title, email, company for contacts). Use this to pull list data into the sheet.',
+      description: 'Fetch ALL companies or contacts FROM an Apollo.io list. Auto-paginates to retrieve the entire list (up to 5000 entries). Returns a summary with sample entries — the full dataset is cached server-side for bulk_write. After calling this, respond with a bulk_write block using source: "apollo_list" and a fields mapping.',
       input_schema: {
         type: 'object',
         properties: {
           list_name: {
             type: 'string',
             description: 'The name of the Apollo list to fetch entries from (case-insensitive, supports partial match)',
-          },
-          page: {
-            type: 'number',
-            description: 'Page number for pagination (default: 1). Use for large lists.',
-          },
-          per_page: {
-            type: 'number',
-            description: 'Number of entries per page (default: 25, max: 100).',
           },
         },
         required: ['list_name'],

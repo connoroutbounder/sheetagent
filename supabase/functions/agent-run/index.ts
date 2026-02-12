@@ -15,7 +15,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { buildChatPrompt, buildRowPrompt, buildToolDefinitions, parseAgentConfig } from '../lib/prompt-builder.ts';
-import { executeToolCalls, setApolloApiKey, setZerobounceApiKey } from '../lib/tools.ts';
+import { executeToolCalls, setApolloApiKey, setZerobounceApiKey, getCachedListEntries } from '../lib/tools.ts';
 import { SheetsClient } from '../lib/sheets-api.ts';
 import type { ChatRequest, StartRunRequest, StopRunRequest, ChatResponse, AgentConfig, SheetContext, RowData } from '../lib/types.ts';
 
@@ -145,19 +145,73 @@ async function handleChat(request: ChatRequest, user: any): Promise<ChatResponse
     }
   }
 
+  // ---------------------------------------------------------------
   // Check for bulk_write block (import data to sheet)
+  // Two modes:
+  //   1. source: "apollo_list" → populate rows from cached Apollo data
+  //   2. Direct rows → use as-is (small datasets)
+  // ---------------------------------------------------------------
   const bulkWriteMatch = finalTextContent.match(/```bulk_write\s*\n?([\s\S]*?)```/);
   if (bulkWriteMatch) {
     try {
       const bulkWrite = JSON.parse(bulkWriteMatch[1]);
       const cleanMessage = finalTextContent.replace(/```bulk_write[\s\S]*?```/g, '').trim();
+
+      // If Claude used the lightweight "source: apollo_list" format,
+      // fill in rows from the cached list entries
+      if (bulkWrite.source === 'apollo_list') {
+        const cached = getCachedListEntries();
+        if (cached && cached.entries.length > 0) {
+          const fields = bulkWrite.fields || (
+            cached.type === 'accounts' ? ['name', 'domain'] : ['name', 'email']
+          );
+          bulkWrite.rows = cached.entries.map((entry: Record<string, string>) =>
+            fields.map((f: string) => entry[f] || '')
+          );
+          // Clean up non-standard fields before sending to sidebar
+          delete bulkWrite.source;
+          delete bulkWrite.fields;
+
+          return {
+            message: cleanMessage || `Writing ${bulkWrite.rows.length} entries from "${cached.listName}" to your sheet...`,
+            bulkWrite,
+          };
+        } else {
+          return {
+            message: 'No cached data available. The Apollo list may have been empty or the fetch failed.',
+          };
+        }
+      }
+
+      // Direct rows mode (small datasets — Claude enumerated rows itself)
       return {
-        message: cleanMessage || 'Writing data to your sheet...',
+        message: cleanMessage || `Writing ${(bulkWrite.rows || []).length} rows to your sheet...`,
         bulkWrite,
       };
     } catch (e) {
       console.error('Failed to parse bulk_write:', e);
     }
+  }
+
+  // ---------------------------------------------------------------
+  // Fallback: if apollo_get_list_entries was called and cached data
+  // exists but Claude didn't produce a bulk_write block, check if
+  // the user's intent was to import data and auto-construct bulk_write.
+  // ---------------------------------------------------------------
+  const cached = getCachedListEntries();
+  if (cached && cached.entries.length > 0) {
+    // Claude fetched the list but didn't produce a proper bulk_write.
+    // Auto-construct one with default column mapping.
+    const defaultFields = cached.type === 'accounts' ? ['name', 'domain'] : ['name', 'email'];
+    const columns = defaultFields.length >= 2 ? ['A', 'B'] : ['A'];
+    const rows = cached.entries.map((entry: Record<string, string>) =>
+      defaultFields.map((f: string) => entry[f] || '')
+    );
+
+    return {
+      message: finalTextContent || `Fetched ${rows.length} entries from "${cached.listName}". Writing to columns ${columns.join(', ')}...`,
+      bulkWrite: { columns, rows },
+    };
   }
 
   // Check for agent_config block (start a row-by-row run)
