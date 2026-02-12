@@ -502,6 +502,7 @@
     let pollInterval = null;
     let conversationHistory = [];
     let isProcessing = false;
+    let pendingAckRows = [];  // Rows we've written that need backend acknowledgment
 
     // ========================================================
     // INITIALIZATION
@@ -688,14 +689,19 @@
 
       // Poll for status every 2 seconds
       pollInterval = setInterval(function() {
+        var ackToSend = pendingAckRows.splice(0);  // Take all pending acks
         google.script.run
           .withSuccessHandler(function(status) {
+            // If the server-side wrote rows, queue them for ack on next poll
+            if (status && status._ackRows && status._ackRows.length > 0) {
+              pendingAckRows = pendingAckRows.concat(status._ackRows);
+            }
             updateProgress(status);
           })
           .withFailureHandler(function(err) {
             console.error('Poll error:', err);
           })
-          .getJobStatus(currentJobId);
+          .getJobStatus(currentJobId, ackToSend);
       }, 2000);
     }
 
@@ -717,6 +723,12 @@
 
       // Job complete
       if (status.status === 'complete' || status.status === 'stopped') {
+        // Do one final ack if needed
+        if (pendingAckRows.length > 0) {
+          var finalAck = pendingAckRows.splice(0);
+          google.script.run.getJobStatus(currentJobId, finalAck);
+        }
+
         clearInterval(pollInterval);
         pollInterval = null;
         currentJobId = null;
@@ -734,7 +746,7 @@
         if (status.status === 'complete') {
           addMessage('agent', 
             '✓ Done! Processed <strong>' + completed + ' rows</strong>. ' +
-            (status.errors > 0 ? status.errors + ' rows had errors. ' : '') +
+            (status.errorRows > 0 ? status.errorRows + ' rows had errors. ' : '') +
             'Results are written to your sheet.'
           );
         }

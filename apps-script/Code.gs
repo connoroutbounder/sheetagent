@@ -171,9 +171,43 @@ function startAgentRun(agentConfig) {
 
 /**
  * Polls for job status. Called repeatedly from sidebar.
+ * Also writes any pending results to the sheet (relay pattern).
  */
-function getJobStatus(jobId) {
-  return ApiClient.get('/agent-status?jobId=' + jobId);
+function getJobStatus(jobId, ackRows) {
+  var url = '/agent-status?jobId=' + jobId;
+  if (ackRows && ackRows.length > 0) {
+    url += '&ackRows=' + ackRows.join(',');
+  }
+  
+  var status = ApiClient.get(url);
+  
+  // If there are pending writes, write them to the sheet now
+  if (status && status.pendingWrites && status.pendingWrites.length > 0) {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+    var outputCol = status.outputColumn || 'B';
+    var statusCol = status.statusColumn || null;
+    var writtenRows = [];
+    
+    status.pendingWrites.forEach(function(pw) {
+      try {
+        sheet.getRange(outputCol + pw.row).setValue(pw.output);
+        if (statusCol) {
+          sheet.getRange(statusCol + pw.row).setValue('✓ Complete');
+        }
+        writtenRows.push(pw.row);
+      } catch (e) {
+        Logger.log('Failed to write row ' + pw.row + ': ' + e.message);
+      }
+    });
+    
+    if (writtenRows.length > 0) {
+      SpreadsheetApp.flush();
+      // Acknowledge written rows so backend marks them as written
+      status._ackRows = writtenRows;
+    }
+  }
+  
+  return status;
 }
 
 /**

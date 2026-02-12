@@ -35,12 +35,39 @@ Deno.serve(async (req) => {
 
     const { data: run, error } = await supabase
       .from('agent_runs')
-      .select('status, total_rows, completed_rows, error_rows, current_row, current_company, errors')
+      .select('status, total_rows, completed_rows, error_rows, current_row, current_company, errors, config')
       .eq('id', jobId)
       .single();
 
     if (error || !run) {
       return json({ error: 'Job not found' }, 404);
+    }
+
+    // Fetch completed rows that haven't been written to the sheet yet
+    const { data: pendingRows } = await supabase
+      .from('run_rows')
+      .select('row_number, output, status')
+      .eq('run_id', jobId)
+      .eq('status', 'complete')
+      .eq('written_to_sheet', false);
+
+    // Build pending writes array for the sidebar to handle
+    const pendingWrites = (pendingRows || []).map((r: any) => ({
+      row: r.row_number,
+      output: r.output,
+    }));
+
+    // If sidebar acknowledges writes, mark them as written
+    const ackRows = url.searchParams.get('ackRows');
+    if (ackRows) {
+      const rowNumbers = ackRows.split(',').map(Number).filter(n => !isNaN(n));
+      if (rowNumbers.length > 0) {
+        await supabase
+          .from('run_rows')
+          .update({ written_to_sheet: true })
+          .eq('run_id', jobId)
+          .in('row_number', rowNumbers);
+      }
     }
 
     return json({
@@ -50,7 +77,10 @@ Deno.serve(async (req) => {
       errorRows: run.error_rows,
       currentRow: run.current_row,
       currentCompany: run.current_company,
-      errors: run.error_rows > 0 ? (run.errors || []).slice(-5) : [], // Last 5 errors
+      errors: run.error_rows > 0 ? (run.errors || []).slice(-5) : [],
+      pendingWrites,
+      outputColumn: run.config?.outputColumn || 'B',
+      statusColumn: run.config?.statusColumn || null,
     });
   } catch (error) {
     console.error('Status error:', error);

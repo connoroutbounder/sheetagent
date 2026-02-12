@@ -222,11 +222,16 @@ async function processRowsAsync(
   sheetName: string,
   rows: number[]
 ) {
-  // Initialize Sheets client for write-back
-  const sheetsClient = new SheetsClient({
-    spreadsheetId,
-    serviceAccountKey: await getServiceAccountKey(supabase, spreadsheetId),
-  });
+  // Try to initialize Sheets client for direct write-back (optional)
+  let sheetsClient: SheetsClient | null = null;
+  try {
+    const serviceAccountKey = await getServiceAccountKey(supabase, spreadsheetId);
+    if (serviceAccountKey) {
+      sheetsClient = new SheetsClient({ spreadsheetId, serviceAccountKey });
+    }
+  } catch (e) {
+    console.warn('No service account configured, results will be written via Apps Script relay');
+  }
 
   const toolDefinitions = buildToolDefinitions(config);
   let completedRows = 0;
@@ -244,24 +249,28 @@ async function processRowsAsync(
       break;
     }
 
-    // Get fresh row data from sheet
+    // Build row data from cached sheet context
     let rowData: RowData;
-    try {
-      const values = await sheetsClient.readRow(sheetName, rowNumber, sheetContext.columnCount);
-      rowData = { _rowNumber: rowNumber };
-      sheetContext.headers.forEach((h, i) => {
-        rowData[h.letter] = values[i] || '';
-        rowData[h.name] = values[i] || '';
-      });
+    const sampleData = getSampleRowData(sheetContext, rowNumber);
+    rowData = { _rowNumber: rowNumber, ...sampleData };
 
-      // Get per-row instruction
-      if (config.instructionColumn) {
-        rowData._instruction = rowData[config.instructionColumn] || config.defaultInstruction;
+    // Try to get fresh data from sheet if we have a sheets client
+    if (sheetsClient) {
+      try {
+        const values = await sheetsClient.readRow(sheetName, rowNumber, sheetContext.columnCount);
+        rowData = { _rowNumber: rowNumber };
+        sheetContext.headers.forEach((h, i) => {
+          rowData[h.letter] = values[i] || '';
+          rowData[h.name] = values[i] || '';
+        });
+      } catch (e) {
+        // Use cached data (already set above)
       }
-    } catch (e) {
-      // If we can't read fresh data, use cached sample data
-      rowData = getSampleRowData(sheetContext, rowNumber) as RowData;
-      rowData._rowNumber = rowNumber;
+    }
+
+    // Get per-row instruction
+    if (config.instructionColumn) {
+      rowData._instruction = rowData[config.instructionColumn] || config.defaultInstruction;
     }
 
     // Update status: processing
@@ -274,35 +283,17 @@ async function processRowsAsync(
       })
       .eq('id', runId);
 
-    // Write "Running" to status column
-    if (config.statusColumn) {
-      try {
-        await sheetsClient.writeCell(sheetName, `${config.statusColumn}${rowNumber}`, '⏳ Running');
-      } catch (e) {
-        console.warn('Failed to write status:', e.message);
-      }
-    }
-
     // Process the row with Claude
     try {
       const result = await processRow(config, rowData, sheetContext, toolDefinitions);
 
-      // Write result to sheet
-      await sheetsClient.writeRowResult(
-        sheetName,
-        rowNumber,
-        config.outputColumn || 'D',
-        result.output,
-        config.statusColumn,
-        '✓ Complete'
-      );
-
-      // Update run_rows record
+      // Store result in database (always works)
       await supabase
         .from('run_rows')
         .update({
           output: result.output,
           status: 'complete',
+          written_to_sheet: false,
           input_tokens: result.inputTokens,
           output_tokens: result.outputTokens,
           cost: result.cost,
@@ -313,19 +304,29 @@ async function processRowsAsync(
         .eq('run_id', runId)
         .eq('row_number', rowNumber);
 
+      // Try direct sheet write if available
+      if (sheetsClient) {
+        try {
+          await sheetsClient.writeRowResult(
+            sheetName, rowNumber,
+            config.outputColumn || 'B', result.output,
+            config.statusColumn, '✓ Complete'
+          );
+          await supabase
+            .from('run_rows')
+            .update({ written_to_sheet: true })
+            .eq('run_id', runId)
+            .eq('row_number', rowNumber);
+        } catch (e) {
+          console.warn(`Sheet write failed for row ${rowNumber}, sidebar will handle it`);
+        }
+      }
+
       completedRows++;
     } catch (error) {
       console.error(`Error processing row ${rowNumber}:`, error);
       errorRows++;
 
-      // Write error to sheet
-      if (config.statusColumn) {
-        try {
-          await sheetsClient.writeCell(sheetName, `${config.statusColumn}${rowNumber}`, '✗ Error');
-        } catch (e) { /* ignore */ }
-      }
-
-      // Log error
       await supabase
         .from('run_rows')
         .update({
@@ -335,12 +336,6 @@ async function processRowsAsync(
         })
         .eq('run_id', runId)
         .eq('row_number', rowNumber);
-
-      // Update run errors array
-      await supabase.rpc('append_run_error', {
-        run_id: runId,
-        error_data: { row: rowNumber, error: error.message, timestamp: new Date().toISOString() },
-      });
     }
 
     // Update progress
