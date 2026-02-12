@@ -338,6 +338,52 @@ function deleteAgent(agentId) {
 // =============================================================
 
 /**
+ * Writes multiple rows of data to the sheet, starting at the first empty row.
+ * Used for bulk imports (e.g. pulling data from an Apollo list).
+ *
+ * @param {Object} bulkWrite - { columns: ["A","B"], rows: [["val1","val2"], ...], startRow?: number }
+ * @returns {Object} { success, rowsWritten, startRow }
+ */
+function writeBulkRows(bulkWrite) {
+  var sheet = SpreadsheetApp.getActiveSheet();
+  var columns = bulkWrite.columns || ['A', 'B'];
+  var rows = bulkWrite.rows || [];
+  
+  if (rows.length === 0) {
+    return { success: false, error: 'No rows to write' };
+  }
+  
+  // Find the first empty row after existing data
+  var startRow = bulkWrite.startRow;
+  if (!startRow) {
+    // Check the first column for last row with data
+    var firstCol = columns[0] || 'A';
+    var lastRow = sheet.getLastRow();
+    startRow = lastRow + 1;
+    
+    // Safety: never write before row 2 (row 1 is headers)
+    if (startRow < 2) startRow = 2;
+  }
+  
+  // Write each row
+  for (var i = 0; i < rows.length; i++) {
+    var rowData = rows[i];
+    var rowNum = startRow + i;
+    
+    for (var j = 0; j < columns.length; j++) {
+      var col = columns[j];
+      var value = (j < rowData.length) ? rowData[j] : '';
+      if (value !== '' && value !== null && value !== undefined) {
+        sheet.getRange(col + rowNum).setValue(value);
+      }
+    }
+  }
+  
+  SpreadsheetApp.flush();
+  return { success: true, rowsWritten: rows.length, startRow: startRow };
+}
+
+/**
  * Writes a value to a specific cell. Used by the backend
  * as a fallback write-back method if service account isn't set up.
  */

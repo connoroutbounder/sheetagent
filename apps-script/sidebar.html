@@ -717,6 +717,27 @@
         conversationHistory.push({ role: 'assistant', content: response.message });
       }
 
+      // Agent returned bulk data to write directly to the sheet
+      if (response.bulkWrite && response.bulkWrite.rows && response.bulkWrite.rows.length > 0) {
+        addMessage('system', '📥 Writing ' + response.bulkWrite.rows.length + ' rows to sheet...');
+        google.script.run
+          .withSuccessHandler(function(result) {
+            if (result && result.success) {
+              addMessage('agent', 
+                '✓ Wrote <strong>' + result.rowsWritten + ' rows</strong> starting at row ' + result.startRow + '. Check your sheet!'
+              );
+              refreshContext();
+            } else {
+              addMessage('error', 'Failed to write rows: ' + (result ? result.error : 'Unknown error'));
+            }
+          })
+          .withFailureHandler(function(err) {
+            addMessage('error', 'Write error: ' + err.message);
+          })
+          .writeBulkRows(response.bulkWrite);
+        return; // Don't process further — bulk write handled
+      }
+
       // Agent wants to run a job (already started by backend)
       if (response.jobId) {
         currentJobId = response.jobId;

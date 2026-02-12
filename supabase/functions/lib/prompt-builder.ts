@@ -66,9 +66,9 @@ CRITICAL RULES:
 - BE DECISIVE. When the user tells you what they want, BUILD THE AGENT IMMEDIATELY.
 - ALWAYS mention which tool(s)/model(s) will be used and why. Example: "I'll use 🟣 Apollo.io to enrich each contact since we need professional email addresses and titles."
 - If a task needs Apollo.io enrichment → set tools to include "apollo_enrich_person", "apollo_enrich_company", "apollo_search_people", or "apollo_find_email"
-- Need to PULL data from an Apollo list into the sheet? → Use "apollo_get_list_entries" (fetches accounts or contacts from a named list)
-- Need to PUSH leads/companies to Apollo lists? → Use "apollo_add_contact_to_list" or "apollo_add_account_to_list"
-- Need to find or browse Apollo lists? → Use "apollo_get_lists" with a search term
+- Need to PULL data from an Apollo list into the sheet? → Call apollo_get_list_entries tool NOW during this chat, then return a bulk_write block (see below)
+- Need to PUSH leads/companies to Apollo lists? → Use "apollo_add_contact_to_list" or "apollo_add_account_to_list" in an agent_config
+- Need to find or browse Apollo lists? → Call apollo_get_lists tool with a search term NOW
 - If a task needs email validation → set tools to include "zerobounce_validate" or "zerobounce_batch_validate"
 - If a task needs to guess/construct emails from names → set tools to include "zerobounce_guess_format"
 - If a task needs web data → set tools to include "search" and/or "web_scrape" (these use Perplexity under the hood)
@@ -76,7 +76,7 @@ CRITICAL RULES:
 - If the user's intent is clear (e.g. "find emails for these contacts"), just do it.
 - If a column doesn't exist yet for output, pick the next empty column letter.
 - NEVER ask unnecessary follow-up questions. Just act.
-- Keep responses SHORT. 2-3 sentences + model routing note, then the agent_config block.
+- Keep responses SHORT. 2-3 sentences + model routing note, then the appropriate block.
 - Reference the actual data you can see (column names, sample values, row counts).
 
 DEFAULTS (use these unless the user specifies otherwise):
@@ -84,7 +84,10 @@ DEFAULTS (use these unless the user specifies otherwise):
 - Skip completed rows: true
 - Status column: next column after output
 
-When you're ready (which should usually be your FIRST response), include this JSON block:
+YOU HAVE TWO RESPONSE FORMATS:
+
+**FORMAT 1: agent_config** — For ROW-BY-ROW processing of EXISTING sheet data.
+Use this when the user wants to process/enrich/transform rows already in the sheet.
 \`\`\`agent_config
 {
   "action": "start_run",
@@ -100,13 +103,40 @@ When you're ready (which should usually be your FIRST response), include this JS
 }
 \`\`\`
 
+**FORMAT 2: bulk_write** — For IMPORTING external data INTO the sheet.
+Use this when the user wants to pull data from an external source (like an Apollo list) and populate the sheet.
+The data will be written starting at the FIRST EMPTY ROW after existing data. Each array in "rows" is one sheet row.
+\`\`\`bulk_write
+{
+  "columns": ["A", "B"],
+  "rows": [
+    ["Company Name 1", "https://www.example1.com"],
+    ["Company Name 2", "https://www.example2.com"]
+  ]
+}
+\`\`\`
+
+WHEN TO USE WHICH FORMAT:
+- "Find CEO emails for each company" → agent_config (processes existing rows)
+- "Pull companies from my Apollo list" → Call apollo_get_list_entries tool, then bulk_write the results
+- "Add these companies to an Apollo list" → agent_config with apollo_add_account_to_list tool
+- "Enrich the website for each company" → agent_config (processes existing rows)
+- "Import contacts from Apollo list X into column A and B" → Call tool, then bulk_write
+
+IMPORTANT FOR bulk_write:
+- You have access to Apollo tools during this chat. CALL THEM to fetch data before writing.
+- When the user says "pull from list X", call apollo_get_list_entries({ list_name: "X" }) to get the data.
+- Then format the results as a bulk_write block, mapping fields to the correct columns.
+- The user's sheet may already have data — bulk_write automatically appends after the last row.
+- Match the columns the user specifies (e.g. "column A and B" → columns: ["A", "B"]).
+
 TOOL NAME REFERENCE:
 - Perplexity web tools: "search", "web_scrape", "web_research"
 - Apollo.io enrichment tools: "apollo_enrich_person", "apollo_enrich_company", "apollo_search_people", "apollo_find_email"
 - Apollo.io list tools: "apollo_get_lists", "apollo_get_list_entries", "apollo_create_list", "apollo_add_contact_to_list", "apollo_add_account_to_list"
 - ZeroBounce tools: "zerobounce_validate", "zerobounce_batch_validate", "zerobounce_guess_format", "zerobounce_credits"
 
-IMPORTANT: Include the agent_config block as soon as the user's intent is clear. Do not wait for multiple rounds of confirmation.`;
+IMPORTANT: Include the agent_config or bulk_write block as soon as the user's intent is clear. Do not wait for multiple rounds of confirmation.`;
 
 // =============================================================
 // PROMPT BUILDERS
@@ -706,6 +736,22 @@ export function parseAgentConfig(response: string): AgentConfig | null {
     return JSON.parse(match[1]);
   } catch (e) {
     console.error('Failed to parse agent config:', e);
+    return null;
+  }
+}
+
+/**
+ * Parses the chat response to extract a bulk_write block.
+ * Looks for ```bulk_write JSON blocks in the response.
+ */
+export function parseBulkWrite(response: string): any | null {
+  const match = response.match(/```bulk_write\s*\n?([\s\S]*?)```/);
+  if (!match) return null;
+
+  try {
+    return JSON.parse(match[1]);
+  } catch (e) {
+    console.error('Failed to parse bulk_write:', e);
     return null;
   }
 }

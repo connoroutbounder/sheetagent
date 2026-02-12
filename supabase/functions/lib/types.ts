@@ -125,14 +125,22 @@ export interface StopRunRequest {
   jobId: string;
 }
 
+export interface BulkWriteData {
+  columns: string[];     // Column letters, e.g. ["A", "B"]
+  rows: string[][];      // Array of row data, e.g. [["McDonald's", "mcdonalds.com"], ...]
+  startRow?: number;     // Optional: explicit start row. Default: first empty row after existing data
+}
+
 export interface ChatResponse {
   message?: string;
   jobId?: string;
   totalRows?: number;
   label?: string;
   agentConfig?: AgentConfig;
+  bulkWrite?: BulkWriteData;
   suggestSave?: boolean;
   error?: string;
+  continuing?: boolean;
 }
 
 export interface JobStatus {

@@ -87,7 +87,7 @@ Deno.serve(async (req) => {
 async function handleChat(request: ChatRequest, user: any): Promise<ChatResponse> {
   const systemPrompt = buildChatPrompt(request.sheetContext);
 
-  const messages = [
+  const messages: any[] = [
     ...(request.conversationHistory || []).map(m => ({
       role: m.role as 'user' | 'assistant',
       content: m.content,
@@ -95,21 +95,75 @@ async function handleChat(request: ChatRequest, user: any): Promise<ChatResponse
     { role: 'user' as const, content: request.message },
   ];
 
-  const response = await callClaude(systemPrompt, messages);
+  // Build tool definitions for chat phase — Apollo list tools + web tools
+  // This allows the agent to call apollo_get_list_entries, apollo_get_lists, etc.
+  // during the planning phase to fetch data for bulk_write operations
+  const chatTools = buildToolDefinitions({
+    tools: [
+      'apollo_get_lists', 'apollo_get_list_entries', 'apollo_create_list',
+      'apollo_enrich_company', 'apollo_search_people', 'apollo_find_email',
+      'search', 'web_research',
+    ],
+  } as AgentConfig);
 
-  if (!response) {
-    return { error: 'Failed to get response from AI' };
+  // Multi-turn tool execution loop (same pattern as processRow)
+  let finalTextContent = '';
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const response = await callClaude(systemPrompt, messages, chatTools.length > 0 ? chatTools : undefined);
+
+    if (!response) {
+      return { error: 'Failed to get response from AI' };
+    }
+
+    const toolUseBlocks = response.content.filter((c: any) => c.type === 'tool_use');
+
+    if (toolUseBlocks.length > 0) {
+      // Execute the tools the agent called
+      const toolResults = await executeToolCalls(
+        toolUseBlocks.map((b: any) => ({ id: b.id, name: b.name, input: b.input }))
+      );
+
+      // Feed results back to continue the conversation
+      messages.push({ role: 'assistant', content: response.content });
+      messages.push({
+        role: 'user',
+        content: toolResults.map(r => ({
+          type: 'tool_result',
+          tool_use_id: r.tool_use_id,
+          content: r.content,
+          is_error: r.is_error,
+        })),
+      });
+      // Loop continues — Claude will process tool results and respond
+    } else {
+      // No tool calls — extract final text
+      finalTextContent = response.content
+        .filter((c: any) => c.type === 'text')
+        .map((c: any) => c.text)
+        .join('\n');
+      break;
+    }
   }
 
-  const textContent = response.content
-    .filter((c: any) => c.type === 'text')
-    .map((c: any) => c.text)
-    .join('\n');
+  // Check for bulk_write block (import data to sheet)
+  const bulkWriteMatch = finalTextContent.match(/```bulk_write\s*\n?([\s\S]*?)```/);
+  if (bulkWriteMatch) {
+    try {
+      const bulkWrite = JSON.parse(bulkWriteMatch[1]);
+      const cleanMessage = finalTextContent.replace(/```bulk_write[\s\S]*?```/g, '').trim();
+      return {
+        message: cleanMessage || 'Writing data to your sheet...',
+        bulkWrite,
+      };
+    } catch (e) {
+      console.error('Failed to parse bulk_write:', e);
+    }
+  }
 
-  const agentConfig = parseAgentConfig(textContent);
-
+  // Check for agent_config block (start a row-by-row run)
+  const agentConfig = parseAgentConfig(finalTextContent);
   if (agentConfig && agentConfig.action === 'start_run') {
-    const cleanMessage = textContent.replace(/```agent_config[\s\S]*?```/g, '').trim();
+    const cleanMessage = finalTextContent.replace(/```agent_config[\s\S]*?```/g, '').trim();
     return {
       message: cleanMessage || 'Ready to start processing!',
       agentConfig,
@@ -117,7 +171,7 @@ async function handleChat(request: ChatRequest, user: any): Promise<ChatResponse
     };
   }
 
-  return { message: textContent };
+  return { message: finalTextContent };
 }
 
 // =============================================================
