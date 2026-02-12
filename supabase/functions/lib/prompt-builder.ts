@@ -154,14 +154,14 @@ export function buildRowPrompt(
       system += '\n- 🟢 Perplexity web tools available: Use web_search or web_scrape for live web information. Returns accurate, cited results.';
     }
     if (hasApolloTools) {
-      system += '\n- 🟣 Apollo.io tools available: Use apollo_enrich_person, apollo_enrich_company, apollo_search_people, or apollo_find_email for B2B contact/company data. Returns structured professional data (emails, titles, phone numbers, company details).';
+      system += '\n- 🟣 Apollo.io tools available. Returns structured B2B data (emails, titles, phone numbers, company details).';
       system += '\n\nAPOLLO.io BEST PRACTICES:';
-      system += '\n- To find a specific role (e.g. CEO, CTO, VP Sales), use apollo_search_people with person_titles AND person_seniorities filters. NEVER try to enumerate all employees.';
-      system += '\n- Example: To find CEO of Tesla → apollo_search_people({ person_titles: ["CEO"], organization_domains: ["tesla.com"], person_seniorities: ["c_suite"], per_page: 1 })';
-      system += '\n- To find email for a known person → apollo_find_email({ first_name: "Elon", last_name: "Musk", domain: "tesla.com" })';
-      system += '\n- To enrich a company → apollo_enrich_company({ domain: "tesla.com" })';
-      system += '\n- Always use the company domain when available (more precise than company name).';
-      system += '\n- If the user asks for "CEO email" or "CTO email", use apollo_search_people with title filters first, then extract the email from results.';
+      system += '\n- **Find CEO/CTO/specific role email**: Use apollo_find_email with title + domain. Example: apollo_find_email({ title: "CEO", domain: "tesla.com" }) → searches filtered to CEO, reveals full profile with email.';
+      system += '\n- **Alternative for role search**: apollo_search_people with person_titles + organization_domains + per_page:1. This searches then auto-reveals top match with email.';
+      system += '\n- **Enrich known person**: apollo_enrich_person({ first_name: "Elon", last_name: "Musk", domain: "tesla.com" })';
+      system += '\n- **Enrich company**: apollo_enrich_company({ domain: "tesla.com" })';
+      system += '\n- Always use company DOMAIN when available (more precise than company name).';
+      system += '\n- NEVER enumerate all employees. Always use title/seniority filters to find specific roles.';
     }
     if (hasWebTools && hasApolloTools) {
       system += '\n- Use Apollo.io for structured B2B data (contact info, company firmographics). Use Perplexity for general web info (news, articles, reviews, pricing).';
@@ -354,7 +354,7 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
   if (enabledTools.includes('apollo_search_people')) {
     tools.push({
       name: 'apollo_search_people',
-      description: 'Search for people in Apollo.io\'s database using FILTERS. This is the best way to find a specific role at a company (e.g. "find the CEO of Tesla"). ALWAYS use person_titles + organization_domains/organization_names filters to narrow results. Set per_page to 1-3 when looking for a specific role. Returns matching professionals with name, title, email, phone, and LinkedIn.',
+      description: 'Search for people in Apollo.io\'s database using FILTERS, then automatically reveals top matches to get full details (email, phone, name). This is the best way to find a specific role at a company (e.g. "find the CEO of Tesla"). ALWAYS use person_titles + organization_domains filters to narrow results. Set per_page to 1 when looking for one specific role. Returns full professional profiles with verified emails.',
       input_schema: {
         type: 'object',
         properties: {
@@ -400,21 +400,25 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
   if (enabledTools.includes('apollo_find_email')) {
     tools.push({
       name: 'apollo_find_email',
-      description: 'Find a person\'s professional email address using Apollo.io. Given their name and company/domain, returns their verified work email. More reliable than guessing email patterns.',
+      description: 'Find a person\'s professional email address using Apollo.io. Two modes: (1) Provide name + company/domain for direct lookup. (2) Provide title + company domain to search-and-reveal (e.g. "find the CEO\'s email at tesla.com"). Returns verified work email.',
       input_schema: {
         type: 'object',
         properties: {
           first_name: {
             type: 'string',
-            description: 'Person\'s first name',
+            description: 'Person\'s first name (for direct lookup)',
           },
           last_name: {
             type: 'string',
-            description: 'Person\'s last name',
+            description: 'Person\'s last name (for direct lookup)',
           },
           name: {
             type: 'string',
             description: 'Full name (alternative to first_name + last_name)',
+          },
+          title: {
+            type: 'string',
+            description: 'Job title to search for (e.g. "CEO", "CTO"). Use when you don\'t know the person\'s name but know their role.',
           },
           organization_name: {
             type: 'string',
@@ -422,7 +426,7 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
           },
           domain: {
             type: 'string',
-            description: 'Company domain (e.g. "apollo.io")',
+            description: 'Company domain (e.g. "tesla.com"). Preferred over organization_name.',
           },
           linkedin_url: {
             type: 'string',

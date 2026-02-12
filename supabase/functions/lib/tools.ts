@@ -342,6 +342,58 @@ function extractData(text: string, fields: string[]): string {
 // =============================================================
 
 /**
+ * Helper: Reveals a person by ID via Apollo.io /v1/people/match.
+ * The search endpoint returns obfuscated data. This "reveals" the
+ * full profile including email, phone, last name, etc.
+ */
+async function apolloRevealPerson(personId: string): Promise<any | null> {
+  try {
+    const data = await apolloRequest('/v1/people/match', {
+      id: personId,
+      reveal_personal_emails: true,
+    });
+    return data.person || null;
+  } catch (e) {
+    console.error('Apollo reveal error:', e.message);
+    return null;
+  }
+}
+
+/**
+ * Helper: Formats a fully-revealed Apollo person into readable text.
+ */
+function formatApolloPerson(person: any): string {
+  const fields: string[] = [];
+  if (person.name) fields.push(`Name: ${person.name}`);
+  if (person.title) fields.push(`Title: ${person.title}`);
+  if (person.headline) fields.push(`Headline: ${person.headline}`);
+  if (person.email) {
+    let emailLine = `Email: ${person.email}`;
+    if (person.email_status) emailLine += ` (${person.email_status})`;
+    fields.push(emailLine);
+  }
+  if (person.phone_numbers?.length > 0) {
+    fields.push(`Phone: ${person.phone_numbers.map((p: any) => p.sanitized_number || p.raw_number).join(', ')}`);
+  }
+  if (person.linkedin_url) fields.push(`LinkedIn: ${person.linkedin_url}`);
+  if (person.city) fields.push(`Location: ${[person.city, person.state, person.country].filter(Boolean).join(', ')}`);
+
+  const org = person.organization;
+  if (org) {
+    fields.push('');
+    fields.push(`Company: ${org.name || 'Unknown'}`);
+    if (org.website_url) fields.push(`Website: ${org.website_url}`);
+    if (org.industry) fields.push(`Industry: ${org.industry}`);
+    if (org.estimated_num_employees) fields.push(`Employees: ${org.estimated_num_employees}`);
+  }
+
+  if (person.seniority) fields.push(`Seniority: ${person.seniority}`);
+  if (person.departments?.length > 0) fields.push(`Department: ${person.departments.join(', ')}`);
+
+  return fields.join('\n') || 'Person found but no details available.';
+}
+
+/**
  * Enriches a person via Apollo.io. Given name + company/domain/email,
  * returns full professional profile: title, email, phone, LinkedIn, etc.
  */
@@ -358,7 +410,6 @@ async function apolloEnrichPerson(input: {
     return 'Apollo.io unavailable: APOLLO_API_KEY not configured. Ask the user to add their Apollo API key in Settings.';
   }
 
-  // Parse a full name into first/last if only "name" was provided
   let firstName = input.first_name || '';
   let lastName = input.last_name || '';
   if (!firstName && !lastName && input.name) {
@@ -378,38 +429,8 @@ async function apolloEnrichPerson(input: {
   try {
     const data = await apolloRequest('/v1/people/match', body);
     const person = data.person;
-
-    if (!person) {
-      return 'No matching person found in Apollo.io.';
-    }
-
-    // Format a clean, structured result
-    const fields: string[] = [];
-    if (person.name) fields.push(`Name: ${person.name}`);
-    if (person.title) fields.push(`Title: ${person.title}`);
-    if (person.headline) fields.push(`Headline: ${person.headline}`);
-    if (person.email) fields.push(`Email: ${person.email}`);
-    if (person.phone_numbers?.length > 0) {
-      fields.push(`Phone: ${person.phone_numbers.map((p: any) => p.sanitized_number || p.raw_number).join(', ')}`);
-    }
-    if (person.linkedin_url) fields.push(`LinkedIn: ${person.linkedin_url}`);
-    if (person.city) fields.push(`Location: ${[person.city, person.state, person.country].filter(Boolean).join(', ')}`);
-
-    // Company info
-    const org = person.organization;
-    if (org) {
-      fields.push('');
-      fields.push(`Company: ${org.name || 'Unknown'}`);
-      if (org.website_url) fields.push(`Website: ${org.website_url}`);
-      if (org.industry) fields.push(`Industry: ${org.industry}`);
-      if (org.estimated_num_employees) fields.push(`Employees: ${org.estimated_num_employees}`);
-    }
-
-    // Seniority & departments
-    if (person.seniority) fields.push(`Seniority: ${person.seniority}`);
-    if (person.departments?.length > 0) fields.push(`Department: ${person.departments.join(', ')}`);
-
-    return fields.join('\n') || 'Person found but no details available.';
+    if (!person) return 'No matching person found in Apollo.io.';
+    return formatApolloPerson(person);
   } catch (e) {
     return `Apollo enrich person error: ${e.message}`;
   }
@@ -429,7 +450,7 @@ async function apolloEnrichCompany(input: {
 
   const body: Record<string, any> = {};
   if (input.domain) body.domain = input.domain;
-  if (input.name && !input.domain) body.domain = input.name; // Apollo prefers domain; try name as domain
+  if (input.name && !input.domain) body.domain = input.name;
 
   try {
     const data = await apolloRequest('/v1/organizations/enrich', body);
@@ -466,8 +487,13 @@ async function apolloEnrichCompany(input: {
 }
 
 /**
- * Searches for people via Apollo.io. Find contacts matching specific criteria
- * like title, company, location, industry, etc.
+ * Searches for people via Apollo.io using the NEW api_search endpoint.
+ * Two-step process:
+ * 1. Search with filters → get obfuscated results with person IDs
+ * 2. Reveal top matches → get full details (email, phone, name)
+ * 
+ * This is the correct way to find "CEO of Tesla" — search with title
+ * filters, then reveal the match to get their email.
  */
 async function apolloSearchPeople(input: {
   person_titles?: string[];
@@ -484,9 +510,10 @@ async function apolloSearchPeople(input: {
     return 'Apollo.io unavailable: APOLLO_API_KEY not configured. Ask the user to add their Apollo API key in Settings.';
   }
 
+  const perPage = Math.min(input.per_page || 3, 25);
   const body: Record<string, any> = {
     page: input.page || 1,
-    per_page: Math.min(input.per_page || 3, 25), // Default 3 for targeted lookups, cap at 25
+    per_page: perPage,
   };
 
   if (input.person_titles) body.person_titles = input.person_titles;
@@ -498,24 +525,39 @@ async function apolloSearchPeople(input: {
   if (input.q_keywords) body.q_keywords = input.q_keywords;
 
   try {
-    const data = await apolloRequest('/api/v1/mixed_people/search', body);
+    // Step 1: Search (returns obfuscated results with IDs)
+    const data = await apolloRequest('/api/v1/mixed_people/api_search', body);
     const people = data.people || [];
-    const totalCount = data.pagination?.total_entries || people.length;
+    const totalCount = data.total_entries || data.pagination?.total_entries || people.length;
 
     if (people.length === 0) {
       return 'No people found matching the search criteria.';
     }
 
-    let result = `Found ${totalCount} people (showing ${people.length}):\n\n`;
+    // Step 2: Reveal top matches to get full details (email, phone, full name)
+    // Only reveal the first few to conserve API credits
+    const revealLimit = Math.min(people.length, 3);
+    let result = `Found ${totalCount} matching people. Showing top ${revealLimit} with full details:\n\n`;
 
-    for (const person of people) {
+    for (let i = 0; i < revealLimit; i++) {
+      const searchResult = people[i];
+      const personId = searchResult.id;
+
+      if (personId) {
+        // Reveal to get full data including email
+        const revealed = await apolloRevealPerson(personId);
+        if (revealed) {
+          result += formatApolloPerson(revealed) + '\n---\n';
+          continue;
+        }
+      }
+
+      // Fallback: show obfuscated search result
       const parts: string[] = [];
-      parts.push(`• ${person.name || 'Unknown'}`);
-      if (person.title) parts.push(`  Title: ${person.title}`);
-      if (person.organization?.name) parts.push(`  Company: ${person.organization.name}`);
-      if (person.email) parts.push(`  Email: ${person.email}`);
-      if (person.city) parts.push(`  Location: ${[person.city, person.state, person.country].filter(Boolean).join(', ')}`);
-      if (person.linkedin_url) parts.push(`  LinkedIn: ${person.linkedin_url}`);
+      parts.push(`• ${searchResult.first_name || ''} ${searchResult.last_name_obfuscated || searchResult.last_name || ''}`);
+      if (searchResult.title) parts.push(`  Title: ${searchResult.title}`);
+      if (searchResult.organization?.name) parts.push(`  Company: ${searchResult.organization.name}`);
+      parts.push(`  (Full details unavailable — could not reveal contact)`);
       result += parts.join('\n') + '\n\n';
     }
 
@@ -526,13 +568,15 @@ async function apolloSearchPeople(input: {
 }
 
 /**
- * Finds a person's email via Apollo.io. Specialized wrapper around
- * people enrichment that focuses on email discovery.
+ * Finds a person's email via Apollo.io. Specialized wrapper:
+ * If name is known → direct match via /v1/people/match
+ * If only title + company → search + reveal
  */
 async function apolloFindEmail(input: {
   first_name?: string;
   last_name?: string;
   name?: string;
+  title?: string;
   organization_name?: string;
   domain?: string;
   linkedin_url?: string;
@@ -541,7 +585,6 @@ async function apolloFindEmail(input: {
     return 'Apollo.io unavailable: APOLLO_API_KEY not configured. Ask the user to add their Apollo API key in Settings.';
   }
 
-  // Parse name
   let firstName = input.first_name || '';
   let lastName = input.last_name || '';
   if (!firstName && !lastName && input.name) {
@@ -550,36 +593,77 @@ async function apolloFindEmail(input: {
     lastName = parts.slice(1).join(' ') || '';
   }
 
-  const body: Record<string, any> = {
-    reveal_personal_emails: false,
-    reveal_phone_number: false,
-  };
-  if (firstName) body.first_name = firstName;
-  if (lastName) body.last_name = lastName;
-  if (input.organization_name) body.organization_name = input.organization_name;
-  if (input.domain) body.domain = input.domain;
-  if (input.linkedin_url) body.linkedin_url = input.linkedin_url;
+  // If we have a name, use direct match (faster, more precise)
+  if (firstName && lastName) {
+    const body: Record<string, any> = {
+      first_name: firstName,
+      last_name: lastName,
+      reveal_personal_emails: true,
+    };
+    if (input.organization_name) body.organization_name = input.organization_name;
+    if (input.domain) body.domain = input.domain;
+    if (input.linkedin_url) body.linkedin_url = input.linkedin_url;
 
-  try {
-    const data = await apolloRequest('/v1/people/match', body);
-    const person = data.person;
+    try {
+      const data = await apolloRequest('/v1/people/match', body);
+      const person = data.person;
 
-    if (!person) {
-      return `No email found for ${firstName} ${lastName} at ${input.organization_name || input.domain || 'unknown company'}.`;
+      if (!person) {
+        return `No email found for ${firstName} ${lastName} at ${input.organization_name || input.domain || 'unknown company'}.`;
+      }
+
+      if (person.email) {
+        let result = person.email;
+        if (person.email_status) result += ` (${person.email_status})`;
+        if (person.title) result += `\nTitle: ${person.title}`;
+        if (person.name) result += `\nName: ${person.name}`;
+        if (person.organization?.name) result += `\nCompany: ${person.organization.name}`;
+        return result;
+      }
+
+      return `Person found (${person.name || 'Unknown'}) but no email available.`;
+    } catch (e) {
+      return `Apollo find email error: ${e.message}`;
     }
-
-    if (person.email) {
-      let result = person.email;
-      if (person.email_status) result += ` (${person.email_status})`;
-      if (person.title) result += `\nTitle: ${person.title}`;
-      if (person.organization?.name) result += `\nCompany: ${person.organization.name}`;
-      return result;
-    }
-
-    return `Person found (${person.name || 'Unknown'}) but no email available.`;
-  } catch (e) {
-    return `Apollo find email error: ${e.message}`;
   }
+
+  // If we only have title + company (e.g. "find CEO email at tesla.com"),
+  // use search + reveal
+  if (input.title && (input.domain || input.organization_name)) {
+    const searchBody: Record<string, any> = {
+      person_titles: [input.title],
+      per_page: 1,
+    };
+    if (input.domain) searchBody.q_organization_domains = input.domain;
+    if (input.organization_name) searchBody.organization_names = [input.organization_name];
+
+    try {
+      const searchData = await apolloRequest('/api/v1/mixed_people/api_search', searchBody);
+      const people = searchData.people || [];
+
+      if (people.length === 0) {
+        return `No ${input.title} found at ${input.domain || input.organization_name}.`;
+      }
+
+      const revealed = await apolloRevealPerson(people[0].id);
+      if (revealed && revealed.email) {
+        let result = revealed.email;
+        if (revealed.email_status) result += ` (${revealed.email_status})`;
+        if (revealed.name) result += `\nName: ${revealed.name}`;
+        if (revealed.title) result += `\nTitle: ${revealed.title}`;
+        if (revealed.organization?.name) result += `\nCompany: ${revealed.organization.name}`;
+        return result;
+      }
+
+      return revealed
+        ? `Found ${revealed.name || 'someone'} (${revealed.title || input.title}) but no email available.`
+        : `Found a match but could not retrieve full details.`;
+    } catch (e) {
+      return `Apollo find email error: ${e.message}`;
+    }
+  }
+
+  return 'Not enough information to find email. Provide either (name + company) or (title + company domain).';
 }
 
 // =============================================================
