@@ -595,16 +595,37 @@
       // Add to conversation history
       conversationHistory.push({ role: 'user', content: text });
 
+      // Always refresh sheet context before sending so agent sees latest data
       google.script.run
-        .withSuccessHandler(function(response) {
-          setProcessing(false);
-          handleAgentResponse(response);
+        .withSuccessHandler(function(freshContext) {
+          sheetContext = freshContext;
+          updateSheetInfo(freshContext);
+
+          google.script.run
+            .withSuccessHandler(function(response) {
+              setProcessing(false);
+              handleAgentResponse(response);
+            })
+            .withFailureHandler(function(err) {
+              setProcessing(false);
+              addMessage('error', 'Error: ' + err.message);
+            })
+            .sendMessage(text, sheetContext, conversationHistory.slice(0, -1));
         })
-        .withFailureHandler(function(err) {
-          setProcessing(false);
-          addMessage('error', 'Error: ' + err.message);
+        .withFailureHandler(function() {
+          // If refresh fails, send with existing context
+          google.script.run
+            .withSuccessHandler(function(response) {
+              setProcessing(false);
+              handleAgentResponse(response);
+            })
+            .withFailureHandler(function(err) {
+              setProcessing(false);
+              addMessage('error', 'Error: ' + err.message);
+            })
+            .sendMessage(text, sheetContext, conversationHistory.slice(0, -1));
         })
-        .sendMessage(text, sheetContext);
+        .getSheetContext();
     }
 
     function handleAgentResponse(response) {

@@ -136,11 +136,12 @@ function getSessionToken() {
  * Sends user message to backend and returns agent response.
  * This is the main chat endpoint called from the sidebar.
  */
-function sendMessage(message, context) {
+function sendMessage(message, context, history) {
   const payload = {
     action: 'chat',
     message: message,
     sheetContext: context || SheetContext.capture(),
+    conversationHistory: history || [],
     spreadsheetId: SpreadsheetApp.getActiveSpreadsheet().getId(),
     sheetName: SpreadsheetApp.getActiveSheet().getName(),
     userEmail: getUserEmail(),
