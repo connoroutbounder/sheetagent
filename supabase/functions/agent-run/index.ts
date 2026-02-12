@@ -120,12 +120,15 @@ async function handleChat(request: ChatRequest, user: any): Promise<ChatResponse
 
 async function handleStartRun(
   supabase: any,
-  request: StartRunRequest,
+  request: StartRunRequest & { selectedRows?: number[] },
   user: any
 ): Promise<ChatResponse> {
-  const { agentConfig, sheetContext, spreadsheetId, sheetName } = request;
+  const { agentConfig, sheetContext, spreadsheetId, sheetName, selectedRows } = request;
 
-  const rowsToProcess = getRowsToProcess(sheetContext, agentConfig);
+  // Use explicitly selected rows if provided, otherwise auto-detect
+  const rowsToProcess = (selectedRows && selectedRows.length > 0)
+    ? selectedRows
+    : getRowsToProcess(sheetContext, agentConfig);
 
   if (rowsToProcess.length === 0) {
     return { message: 'No rows to process. All rows either have output or are empty.' };

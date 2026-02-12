@@ -407,6 +407,34 @@
     .col-tag.output { background: var(--accent-dim); color: var(--accent); }
     .col-tag.status { background: rgba(251, 191, 36, 0.15); color: var(--warning); }
 
+    /* ---- SELECTION BAR ---- */
+    .selection-bar {
+      padding: 8px 16px;
+      background: var(--accent-blue-dim);
+      border-bottom: 1px solid #2d4a6f;
+      display: none;
+      flex-shrink: 0;
+      font-size: 12px;
+      color: var(--accent-blue);
+      align-items: center;
+      gap: 8px;
+    }
+
+    .selection-bar.active { display: flex; }
+
+    .selection-bar .sel-icon { font-size: 14px; }
+    .selection-bar .sel-text { flex: 1; font-weight: 500; }
+    .selection-bar .sel-clear {
+      background: none;
+      border: 1px solid #2d4a6f;
+      color: var(--accent-blue);
+      padding: 2px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 11px;
+    }
+    .selection-bar .sel-clear:hover { background: rgba(96, 165, 250, 0.15); }
+
     /* Scrollbar styling */
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -433,6 +461,13 @@
     <div class="tab active" data-panel="chat" onclick="switchTab('chat')">💬 Chat</div>
     <div class="tab" data-panel="agents" onclick="switchTab('agents')">📦 Agents</div>
     <div class="tab" data-panel="context" onclick="switchTab('context')">📊 Context</div>
+  </div>
+
+  <!-- SELECTION BAR -->
+  <div class="selection-bar" id="selectionBar">
+    <span class="sel-icon">✦</span>
+    <span class="sel-text" id="selectionText">3 rows selected</span>
+    <button class="sel-clear" onclick="clearSelection()">✕ Clear</button>
   </div>
 
   <!-- CHAT PANEL -->
@@ -503,6 +538,8 @@
     let conversationHistory = [];
     let isProcessing = false;
     let pendingAckRows = [];  // Rows we've written that need backend acknowledgment
+    let selectedRows = [];    // Highlighted rows to process (empty = all)
+    let selectionCheckInterval = null;
 
     // ========================================================
     // INITIALIZATION
@@ -511,6 +548,33 @@
     function init() {
       loadSheetContext();
       loadAgents();
+      // Check for selection changes every 3 seconds
+      selectionCheckInterval = setInterval(checkSelection, 3000);
+      checkSelection(); // Initial check
+    }
+
+    function checkSelection() {
+      google.script.run
+        .withSuccessHandler(function(sel) {
+          if (sel && sel.hasSelection && sel.count > 0) {
+            selectedRows = sel.rows;
+            document.getElementById('selectionText').textContent = 
+              sel.count + ' row' + (sel.count > 1 ? 's' : '') + ' selected (' + sel.range + ')';
+            document.getElementById('selectionBar').classList.add('active');
+          } else {
+            selectedRows = [];
+            document.getElementById('selectionBar').classList.remove('active');
+          }
+        })
+        .withFailureHandler(function() {
+          // Silent fail
+        })
+        .getSelectedRows();
+    }
+
+    function clearSelection() {
+      selectedRows = [];
+      document.getElementById('selectionBar').classList.remove('active');
     }
 
     function loadSheetContext() {
@@ -596,6 +660,14 @@
       // Add to conversation history
       conversationHistory.push({ role: 'user', content: text });
 
+      // Enrich message with selection context if rows are highlighted
+      var enrichedText = text;
+      if (selectedRows.length > 0) {
+        enrichedText += '\n\n[User has ' + selectedRows.length + ' rows selected (rows ' + 
+          selectedRows.slice(0, 5).join(', ') + 
+          (selectedRows.length > 5 ? '...' : '') + '). Process ONLY these selected rows.]';
+      }
+
       // Always refresh sheet context before sending so agent sees latest data
       google.script.run
         .withSuccessHandler(function(freshContext) {
@@ -611,10 +683,9 @@
               setProcessing(false);
               addMessage('error', 'Error: ' + err.message);
             })
-            .sendMessage(text, sheetContext, conversationHistory.slice(0, -1));
+            .sendMessage(enrichedText, sheetContext, conversationHistory.slice(0, -1));
         })
         .withFailureHandler(function() {
-          // If refresh fails, send with existing context
           google.script.run
             .withSuccessHandler(function(response) {
               setProcessing(false);
@@ -624,7 +695,7 @@
               setProcessing(false);
               addMessage('error', 'Error: ' + err.message);
             })
-            .sendMessage(text, sheetContext, conversationHistory.slice(0, -1));
+            .sendMessage(enrichedText, sheetContext, conversationHistory.slice(0, -1));
         })
         .getSheetContext();
     }
@@ -654,7 +725,10 @@
 
       // Agent returned a config but job hasn't started yet — auto-start it
       if (response.agentConfig && response.agentConfig.action === 'start_run' && !response.jobId) {
-        addMessage('system', '⚡ Starting agent run...');
+        var rowScope = selectedRows.length > 0 
+          ? '⚡ Starting agent run on ' + selectedRows.length + ' selected rows...'
+          : '⚡ Starting agent run...';
+        addMessage('system', rowScope);
         google.script.run
           .withSuccessHandler(function(runResponse) {
             if (runResponse && runResponse.jobId) {
@@ -670,7 +744,7 @@
           .withFailureHandler(function(err) {
             addMessage('error', 'Failed to start run: ' + err.message);
           })
-          .startAgentRun(response.agentConfig);
+          .startAgentRun(response.agentConfig, selectedRows.length > 0 ? selectedRows : null);
       }
     }
 

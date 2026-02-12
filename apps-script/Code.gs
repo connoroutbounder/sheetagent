@@ -153,8 +153,9 @@ function sendMessage(message, context, history) {
 /**
  * Starts an agent run on the current sheet.
  * Returns a jobId that the sidebar can poll for status.
+ * If selectedRows is provided, only those rows will be processed.
  */
-function startAgentRun(agentConfig) {
+function startAgentRun(agentConfig, selectedRows) {
   const context = SheetContext.capture();
   
   const payload = {
@@ -166,7 +167,43 @@ function startAgentRun(agentConfig) {
     userEmail: getUserEmail(),
   };
   
+  // If specific rows are selected, override which rows to process
+  if (selectedRows && selectedRows.length > 0) {
+    payload.selectedRows = selectedRows;
+  }
+  
   return ApiClient.post('/agent-run', payload);
+}
+
+/**
+ * Gets the currently selected row numbers in the sheet.
+ * Returns an array of 1-indexed row numbers (excluding the header row).
+ */
+function getSelectedRows() {
+  var sheet = SpreadsheetApp.getActiveSheet();
+  var selection = sheet.getActiveRange();
+  
+  if (!selection) {
+    return { hasSelection: false, rows: [], count: 0 };
+  }
+  
+  var startRow = selection.getRow();
+  var numRows = selection.getNumRows();
+  var rows = [];
+  
+  for (var i = 0; i < numRows; i++) {
+    var rowNum = startRow + i;
+    if (rowNum > 1) { // Skip header row
+      rows.push(rowNum);
+    }
+  }
+  
+  return {
+    hasSelection: rows.length > 0,
+    rows: rows,
+    count: rows.length,
+    range: selection.getA1Notation(),
+  };
 }
 
 /**
