@@ -7,7 +7,12 @@
  * - Sheet context (headers, column analysis)
  * - Row-specific data (input values, per-row instructions)
  * 
- * Designed for Claude Sonnet 4.5 with tool use.
+ * The agent uses two models:
+ * - Claude: reasoning, planning, analysis, writing
+ * - Perplexity: web search, scraping, live data lookup
+ * 
+ * The chat prompt instructs Claude to announce which model
+ * will handle each step, so the user sees the routing.
  */
 
 import type { AgentConfig, SheetContext, RowData } from './types.ts';
@@ -28,28 +33,34 @@ AVAILABLE CONTEXT:
 - You receive the sheet's column headers and structure.
 - You receive the current row's data across all input columns.
 - You may receive a per-row instruction that overrides the default task.
-- You have access to tools for web scraping, search, and data extraction.`;
+- You have access to web tools powered by Perplexity (search-native AI) for live web lookups.`;
 
 const CHAT_SYSTEM_PROMPT = `You are an AI agent builder embedded in a Google Sheets sidebar. You help users create agents that process their spreadsheet data row by row.
 
 You can see the user's active sheet structure — headers, column types, sample data, and which rows need processing.
 
+YOU HAVE TWO AI MODELS AVAILABLE:
+- **🔵 Claude** — for reasoning, analysis, summarization, writing, classification, and data transformation
+- **🟢 Perplexity** — for web search, finding URLs, live data lookup, company research, and anything requiring fresh internet data
+
 CRITICAL RULES:
-- BE DECISIVE. When the user tells you what they want, BUILD THE AGENT IMMEDIATELY. Do NOT ask unnecessary follow-up questions.
-- If the user's intent is clear (e.g. "find websites for these companies"), just do it. Pick sensible defaults for output columns, status columns, etc.
+- BE DECISIVE. When the user tells you what they want, BUILD THE AGENT IMMEDIATELY.
+- ALWAYS mention which model(s) will be used and why. Example: "I'll use 🟢 Perplexity to search for each company's website since this needs live web access."
+- If a task needs web data → set tools to ["search"] or ["web_scrape", "search"] (these use Perplexity under the hood)
+- If a task is pure analysis/writing with no web needs → set tools to [] (Claude handles it directly)
+- If a task needs both (e.g. "research companies then summarize") → mention both models: "🟢 Perplexity will find the data, then 🔵 Claude will analyze and format it."
+- If the user's intent is clear (e.g. "find websites for these companies"), just do it.
 - If a column doesn't exist yet for output, pick the next empty column letter.
-- NEVER repeat back what the user already told you and ask them to confirm. Just act.
-- Keep responses SHORT. 2-3 sentences max, then the agent_config block.
+- NEVER ask unnecessary follow-up questions. Just act.
+- Keep responses SHORT. 2-3 sentences + model routing note, then the agent_config block.
 - Reference the actual data you can see (column names, sample values, row counts).
-- Only ask a question if the request is genuinely ambiguous (e.g. you can't tell which column has the input data).
 
 DEFAULTS (use these unless the user specifies otherwise):
 - Output format: concise, 1-2 sentences or a single value
-- Tools: ["search"] for lookups, ["web_scrape", "search"] if they mention websites
 - Skip completed rows: true
 - Status column: next column after output
 
-When you're ready to start (which should usually be your FIRST response), include this JSON block:
+When you're ready (which should usually be your FIRST response), include this JSON block:
 \`\`\`agent_config
 {
   "action": "start_run",
@@ -116,6 +127,12 @@ export function buildRowPrompt(
   // System prompt
   let system = config.systemPrompt || BASE_SYSTEM_PROMPT;
   
+  // Add model routing context
+  const hasWebTools = (config.tools || []).some(t => ['search', 'web_scrape', 'web_research'].includes(t));
+  if (hasWebTools) {
+    system += '\n\nMODEL ROUTING: You have access to web tools powered by Perplexity (search-native AI). Use web_search or web_scrape tools to find live information. The tools automatically use Perplexity for accurate, cited results.';
+  }
+
   system += '\n\nOUTPUT CONSTRAINTS:';
   if (config.outputFormat) {
     system += `\n- Format: ${config.outputFormat}`;
@@ -148,6 +165,7 @@ export function buildRowPrompt(
 /**
  * Builds tool definitions based on agent config.
  * These are passed to the Claude API as tool schemas.
+ * Web tools (search, scrape, research) are powered by Perplexity under the hood.
  */
 export function buildToolDefinitions(config: AgentConfig): any[] {
   const tools: any[] = [];
@@ -156,7 +174,7 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
   if (enabledTools.includes('web_scrape')) {
     tools.push({
       name: 'web_scrape',
-      description: 'Fetch and extract content from a web page. Use this to visit company websites, blog posts, or any URL.',
+      description: 'Fetch and extract content from a specific URL. Powered by Perplexity — returns intelligent, structured extraction rather than raw HTML. Use for visiting company websites, reading articles, or extracting data from known URLs.',
       input_schema: {
         type: 'object',
         properties: {
@@ -177,16 +195,37 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
   if (enabledTools.includes('search')) {
     tools.push({
       name: 'web_search',
-      description: 'Search the web for information. Use this to find recent news, funding info, competitor data, or any public information.',
+      description: 'Search the web for information. Powered by Perplexity — returns search-grounded answers with citations in a single call. Use for finding websites, company info, news, funding data, contact details, or any live web data.',
       input_schema: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: 'The search query',
+            description: 'The search query. Be specific — include company name, what you\'re looking for, etc.',
           },
         },
         required: ['query'],
+      },
+    });
+  }
+
+  if (enabledTools.includes('web_research')) {
+    tools.push({
+      name: 'web_research',
+      description: 'Deep web research on a topic. Powered by Perplexity — synthesizes multiple sources into a comprehensive answer. Use for complex research questions that need multiple data points.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          question: {
+            type: 'string',
+            description: 'The research question to investigate',
+          },
+          context: {
+            type: 'string',
+            description: 'Optional context about what you already know or what angle to research',
+          },
+        },
+        required: ['question'],
       },
     });
   }
@@ -241,14 +280,13 @@ export function estimateRowCost(config: AgentConfig): {
   outputTokens: number;
   costUsd: number;
 } {
-  // Rough estimates based on typical prompts
   const baseSystemTokens = 300;
   const configTokens = 100;
   const rowDataTokens = 50 * (config.inputColumns?.length || 2);
-  const toolUseTokens = (config.tools || []).includes('web_scrape') ? 1500 : 500;
+  const toolUseTokens = (config.tools || []).includes('search') ? 1500 : 500;
   
   const inputTokens = baseSystemTokens + configTokens + rowDataTokens + toolUseTokens;
-  const outputTokens = 150; // ~1-2 sentences
+  const outputTokens = 150;
   
   // Sonnet 4.5 pricing: $3/M input, $15/M output
   const costUsd = (inputTokens * 3 + outputTokens * 15) / 1_000_000;

@@ -287,6 +287,10 @@ async function processRowsAsync(
     try {
       const result = await processRow(config, rowData, sheetContext, toolDefinitions);
 
+      // Determine models used for this row
+      const hasWebTools = (config.tools || []).some(t => ['search', 'web_scrape', 'web_research'].includes(t));
+      const modelsUsed = hasWebTools ? `${MODEL} + perplexity/sonar` : MODEL;
+
       // Store result in database (always works)
       await supabase
         .from('run_rows')
@@ -297,7 +301,7 @@ async function processRowsAsync(
           input_tokens: result.inputTokens,
           output_tokens: result.outputTokens,
           cost: result.cost,
-          model: MODEL,
+          model: modelsUsed,
           latency_ms: result.latencyMs,
           completed_at: new Date().toISOString(),
         })

@@ -3,8 +3,13 @@
  * tools.ts — AI Agent Tool Implementations
  * ============================================================
  * Handles tool calls from Claude during agent execution.
- * Each tool maps to a real API: Firecrawl for scraping,
- * Serper for search, and built-in extraction logic.
+ * 
+ * Web tools (search, scrape) are powered by Perplexity —
+ * a search-native AI model that returns grounded, cited results
+ * in a single API call. This replaces the old Serper + scraping
+ * pipeline with something faster, cheaper, and more accurate.
+ * 
+ * Analysis tools stay in Claude (the orchestrator).
  */
 
 // =============================================================
@@ -26,10 +31,9 @@ interface ToolResult {
 // ENVIRONMENT
 // =============================================================
 
+const PERPLEXITY_API_KEY = Deno.env.get('PERPLEXITY_API_KEY') || '';
 const FIRECRAWL_API_KEY = Deno.env.get('FIRECRAWL_API_KEY') || '';
-const SERPER_API_KEY = Deno.env.get('SERPER_API_KEY') || '';
-const FIRECRAWL_BASE_URL = 'https://api.firecrawl.dev/v1';
-const SERPER_BASE_URL = 'https://google.serper.dev';
+const PERPLEXITY_MODEL = 'sonar';  // Fast, search-optimized model
 
 // =============================================================
 // TOOL EXECUTOR
@@ -43,10 +47,12 @@ export async function executeTool(toolCall: ToolCall): Promise<string> {
 
   try {
     switch (name) {
-      case 'web_scrape':
-        return await webScrape(input.url, input.extract);
       case 'web_search':
-        return await webSearch(input.query);
+        return await perplexitySearch(input.query);
+      case 'web_scrape':
+        return await perplexityScrape(input.url, input.extract);
+      case 'web_research':
+        return await perplexityResearch(input.question, input.context);
       case 'extract_data':
         return extractData(input.text, input.fields);
       default:
@@ -76,7 +82,7 @@ export async function executeToolCalls(
         const content = await executeTool({ name: call.name, input: call.input });
         return {
           tool_use_id: call.id,
-          content: truncateResult(content, 4000), // Cap to prevent context overflow
+          content: truncateResult(content, 4000),
           is_error: content.startsWith('Tool error:'),
         };
       })
@@ -88,67 +94,118 @@ export async function executeToolCalls(
 }
 
 // =============================================================
-// WEB SCRAPER (Firecrawl)
+// PERPLEXITY-POWERED WEB TOOLS
 // =============================================================
 
 /**
- * Scrapes a webpage and returns extracted content.
- * Uses Firecrawl for reliable rendering and extraction.
- * Falls back to basic fetch if Firecrawl is unavailable.
+ * Web search via Perplexity. Returns search-grounded answers
+ * with citations in a single API call.
  */
-async function webScrape(url: string, extractHint?: string): Promise<string> {
-  // Normalize URL
+async function perplexitySearch(query: string): Promise<string> {
+  if (!PERPLEXITY_API_KEY) {
+    return `Search unavailable: PERPLEXITY_API_KEY not configured. Query was: "${query}"`;
+  }
+
+  try {
+    const response = await fetch('https://api.perplexity.ai/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${PERPLEXITY_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: PERPLEXITY_MODEL,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a precise research assistant. Return factual, concise answers with source URLs. If looking for a website, return the exact URL.',
+          },
+          {
+            role: 'user',
+            content: query,
+          },
+        ],
+        max_tokens: 500,
+        return_citations: true,
+      }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      return `Perplexity search error (${response.status}): ${errText}`;
+    }
+
+    const data = await response.json();
+    let answer = data.choices?.[0]?.message?.content || 'No results found.';
+
+    // Append citations if available
+    if (data.citations && data.citations.length > 0) {
+      answer += '\n\nSources:\n' + data.citations.map((c: string, i: number) => `[${i + 1}] ${c}`).join('\n');
+    }
+
+    return answer;
+  } catch (e) {
+    return `Search error: ${e.message}`;
+  }
+}
+
+/**
+ * Web scraping via Perplexity. Instead of fetching raw HTML,
+ * we ask Perplexity to read and extract from a specific URL.
+ */
+async function perplexityScrape(url: string, extractHint?: string): Promise<string> {
   if (!url.startsWith('http')) {
     url = 'https://' + url;
   }
 
-  // Try Firecrawl first
-  if (FIRECRAWL_API_KEY) {
+  // If Perplexity is available, use it for intelligent extraction
+  if (PERPLEXITY_API_KEY) {
+    const prompt = extractHint
+      ? `Go to ${url} and extract the following: ${extractHint}. Be specific and factual.`
+      : `Go to ${url} and summarize the main content. Include key facts, data, and any contact information.`;
+
     try {
-      const response = await fetch(`${FIRECRAWL_BASE_URL}/scrape`, {
+      const response = await fetch('https://api.perplexity.ai/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${FIRECRAWL_API_KEY}`,
+          'Authorization': `Bearer ${PERPLEXITY_API_KEY}`,
         },
         body: JSON.stringify({
-          url,
-          formats: ['markdown'],
-          onlyMainContent: true,
-          waitFor: 2000,
-          timeout: 15000,
+          model: PERPLEXITY_MODEL,
+          messages: [
+            {
+              role: 'system',
+              content: 'You are a web scraping assistant. Extract and return the requested information from the given URL. Be precise and factual.',
+            },
+            { role: 'user', content: prompt },
+          ],
+          max_tokens: 1000,
+          return_citations: true,
         }),
       });
 
       if (response.ok) {
         const data = await response.json();
-        const markdown = data.data?.markdown || '';
-        
-        if (markdown) {
-          // If there's an extraction hint, return relevant section
-          if (extractHint) {
-            return extractRelevantContent(markdown, extractHint);
-          }
-          return truncateResult(markdown, 6000);
+        let answer = data.choices?.[0]?.message?.content || '';
+        if (data.citations && data.citations.length > 0) {
+          answer += '\n\nSources:\n' + data.citations.map((c: string, i: number) => `[${i + 1}] ${c}`).join('\n');
         }
+        if (answer) return answer;
       }
     } catch (e) {
-      console.warn('Firecrawl error, falling back:', e.message);
+      console.warn('Perplexity scrape error, falling back:', e.message);
     }
   }
 
   // Fallback: basic fetch
   try {
     const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; AgentBuilder/1.0)',
-      },
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; AgentBuilder/1.0)' },
       signal: AbortSignal.timeout(10000),
     });
 
     const html = await response.text();
-    
-    // Basic HTML to text extraction
     const text = html
       .replace(/<script[\s\S]*?<\/script>/gi, '')
       .replace(/<style[\s\S]*?<\/style>/gi, '')
@@ -162,64 +219,61 @@ async function webScrape(url: string, extractHint?: string): Promise<string> {
   }
 }
 
-// =============================================================
-// WEB SEARCH (Serper)
-// =============================================================
-
 /**
- * Performs a web search and returns formatted results.
+ * Deep web research via Perplexity. For complex questions that
+ * need multiple search results synthesized into one answer.
  */
-async function webSearch(query: string): Promise<string> {
-  if (!SERPER_API_KEY) {
-    return `Search unavailable: SERPER_API_KEY not configured. Query was: "${query}"`;
+async function perplexityResearch(question: string, context?: string): Promise<string> {
+  if (!PERPLEXITY_API_KEY) {
+    return `Research unavailable: PERPLEXITY_API_KEY not configured. Question was: "${question}"`;
+  }
+
+  const messages: Array<{ role: string; content: string }> = [
+    {
+      role: 'system',
+      content: 'You are a thorough research assistant. Provide comprehensive, well-sourced answers. Include specific data points, URLs, and citations.',
+    },
+  ];
+
+  if (context) {
+    messages.push({
+      role: 'user',
+      content: `Context: ${context}\n\nResearch question: ${question}`,
+    });
+  } else {
+    messages.push({ role: 'user', content: question });
   }
 
   try {
-    const response = await fetch(`${SERPER_BASE_URL}/search`, {
+    const response = await fetch('https://api.perplexity.ai/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-API-KEY': SERPER_API_KEY,
+        'Authorization': `Bearer ${PERPLEXITY_API_KEY}`,
       },
       body: JSON.stringify({
-        q: query,
-        num: 5,
+        model: PERPLEXITY_MODEL,
+        messages,
+        max_tokens: 1500,
+        return_citations: true,
       }),
     });
 
     if (!response.ok) {
-      return `Search API error: ${response.status}`;
+      const errText = await response.text();
+      return `Research error (${response.status}): ${errText}`;
     }
 
     const data = await response.json();
-    const results: string[] = [];
+    let answer = data.choices?.[0]?.message?.content || 'No results found.';
 
-    // Knowledge graph (if available)
-    if (data.knowledgeGraph) {
-      const kg = data.knowledgeGraph;
-      results.push(`[Knowledge Graph] ${kg.title}: ${kg.description || ''}`);
-      if (kg.attributes) {
-        for (const [key, value] of Object.entries(kg.attributes)) {
-          results.push(`  ${key}: ${value}`);
-        }
-      }
+    if (data.citations && data.citations.length > 0) {
+      answer += '\n\nSources:\n' + data.citations.map((c: string, i: number) => `[${i + 1}] ${c}`).join('\n');
     }
 
-    // Organic results
-    if (data.organic) {
-      for (const result of data.organic.slice(0, 5)) {
-        results.push(`[${result.title}] (${result.link})\n${result.snippet || ''}`);
-      }
-    }
-
-    // Answer box
-    if (data.answerBox) {
-      results.unshift(`[Direct Answer] ${data.answerBox.answer || data.answerBox.snippet || ''}`);
-    }
-
-    return results.join('\n\n') || 'No results found.';
+    return answer;
   } catch (e) {
-    return `Search error: ${e.message}`;
+    return `Research error: ${e.message}`;
   }
 }
 
@@ -233,8 +287,6 @@ async function webSearch(query: string): Promise<string> {
  * to parse specific data points from scraped content.
  */
 function extractData(text: string, fields: string[]): string {
-  // For the extraction tool, we return the text with field hints
-  // The actual extraction happens in the AI layer
   const fieldList = fields.join(', ');
   return `Extract the following from the text below: ${fieldList}\n\n---\n${truncateResult(text, 3000)}`;
 }
@@ -244,34 +296,13 @@ function extractData(text: string, fields: string[]): string {
 // =============================================================
 
 /**
- * Extracts the most relevant section of content based on a hint.
- */
-function extractRelevantContent(text: string, hint: string): string {
-  const keywords = hint.toLowerCase().split(/\s+/);
-  const paragraphs = text.split(/\n\n+/);
-  
-  // Score each paragraph by keyword matches
-  const scored = paragraphs.map((p, idx) => {
-    const lower = p.toLowerCase();
-    const score = keywords.reduce((sum, kw) => sum + (lower.includes(kw) ? 1 : 0), 0);
-    return { text: p, score, idx };
-  });
-
-  // Sort by relevance, keep top sections
-  scored.sort((a, b) => b.score - a.score);
-  const relevant = scored.slice(0, 5).sort((a, b) => a.idx - b.idx);
-  
-  return relevant.map(r => r.text).join('\n\n');
-}
-
-/**
  * Truncates text to a maximum character count, preserving word boundaries.
  */
 function truncateResult(text: string, maxChars: number): string {
   if (!text || text.length <= maxChars) return text;
-  
+
   const truncated = text.substring(0, maxChars);
   const lastSpace = truncated.lastIndexOf(' ');
-  
+
   return truncated.substring(0, lastSpace > maxChars * 0.8 ? lastSpace : maxChars) + '\n[...truncated]';
 }
