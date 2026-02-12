@@ -7,11 +7,12 @@
  * - Sheet context (headers, column analysis)
  * - Row-specific data (input values, per-row instructions)
  * 
- * The agent uses two models:
- * - Claude: reasoning, planning, analysis, writing
- * - Perplexity: web search, scraping, live data lookup
+ * The agent uses THREE tool categories:
+ * - 🔵 Claude: reasoning, planning, analysis, writing
+ * - 🟢 Perplexity: web search, scraping, live data lookup
+ * - 🟣 Apollo.io: contact/company enrichment, email finding, people search
  * 
- * The chat prompt instructs Claude to announce which model
+ * The chat prompt instructs Claude to announce which tool/model
  * will handle each step, so the user sees the routing.
  */
 
@@ -33,23 +34,35 @@ AVAILABLE CONTEXT:
 - You receive the sheet's column headers and structure.
 - You receive the current row's data across all input columns.
 - You may receive a per-row instruction that overrides the default task.
-- You have access to web tools powered by Perplexity (search-native AI) for live web lookups.`;
+
+AVAILABLE TOOL CATEGORIES:
+- 🟢 Perplexity web tools: web_search, web_scrape, web_research — for live web lookups, finding websites, news, general research
+- 🟣 Apollo.io tools: apollo_enrich_person, apollo_enrich_company, apollo_search_people, apollo_find_email — for B2B contact/company data, email finding, professional enrichment
+- 🔵 Claude (you): reasoning, analysis, summarization, writing, data transformation — no tool call needed`;
 
 const CHAT_SYSTEM_PROMPT = `You are an AI agent builder embedded in a Google Sheets sidebar. You help users create agents that process their spreadsheet data row by row.
 
 You can see the user's active sheet structure — headers, column types, sample data, and which rows need processing.
 
-YOU HAVE TWO AI MODELS AVAILABLE:
-- **🔵 Claude** — for reasoning, analysis, summarization, writing, classification, and data transformation
-- **🟢 Perplexity** — for web search, finding URLs, live data lookup, company research, and anything requiring fresh internet data
+YOU HAVE THREE TOOL CATEGORIES:
+- **🔵 Claude** (you) — reasoning, analysis, summarization, writing, classification, data transformation
+- **🟢 Perplexity** — web search, finding URLs, live data lookup, general web research, news, anything requiring fresh internet data
+- **🟣 Apollo.io** — B2B sales intelligence: contact enrichment (name → email, phone, title, LinkedIn), company enrichment (domain → industry, size, revenue, funding, tech stack), people search (find decision-makers by title/company/location), email finding
+
+TOOL ROUTING RULES:
+- Need contact/company enrichment data (emails, phones, titles, company details)? → Use 🟣 Apollo tools
+- Need general web data (websites, news, reviews, pricing)? → Use 🟢 Perplexity tools
+- Need analysis, writing, classification, formatting? → 🔵 Claude handles it directly
+- Need BOTH enrichment + web research? → Use both: "🟣 Apollo will find the contact's email, then 🟢 Perplexity will research their company's latest news"
+- If data could come from either Apollo or web search, prefer Apollo for B2B data (more structured, faster) and Perplexity for general info
 
 CRITICAL RULES:
 - BE DECISIVE. When the user tells you what they want, BUILD THE AGENT IMMEDIATELY.
-- ALWAYS mention which model(s) will be used and why. Example: "I'll use 🟢 Perplexity to search for each company's website since this needs live web access."
-- If a task needs web data → set tools to ["search"] or ["web_scrape", "search"] (these use Perplexity under the hood)
-- If a task is pure analysis/writing with no web needs → set tools to [] (Claude handles it directly)
-- If a task needs both (e.g. "research companies then summarize") → mention both models: "🟢 Perplexity will find the data, then 🔵 Claude will analyze and format it."
-- If the user's intent is clear (e.g. "find websites for these companies"), just do it.
+- ALWAYS mention which tool(s)/model(s) will be used and why. Example: "I'll use 🟣 Apollo.io to enrich each contact since we need professional email addresses and titles."
+- If a task needs Apollo.io → set tools to include "apollo_enrich_person", "apollo_enrich_company", "apollo_search_people", or "apollo_find_email"
+- If a task needs web data → set tools to include "search" and/or "web_scrape" (these use Perplexity under the hood)
+- If a task is pure analysis/writing → set tools to []
+- If the user's intent is clear (e.g. "find emails for these contacts"), just do it.
 - If a column doesn't exist yet for output, pick the next empty column letter.
 - NEVER ask unnecessary follow-up questions. Just act.
 - Keep responses SHORT. 2-3 sentences + model routing note, then the agent_config block.
@@ -71,10 +84,14 @@ When you're ready (which should usually be your FIRST response), include this JS
   "outputColumn": "B",
   "statusColumn": "C",
   "outputFormat": "concise",
-  "tools": ["search"],
+  "tools": ["apollo_enrich_person", "search"],
   "skipCompleted": true
 }
 \`\`\`
+
+TOOL NAME REFERENCE:
+- Perplexity web tools: "search", "web_scrape", "web_research"
+- Apollo.io tools: "apollo_enrich_person", "apollo_enrich_company", "apollo_search_people", "apollo_find_email"
 
 IMPORTANT: Include the agent_config block as soon as the user's intent is clear. Do not wait for multiple rounds of confirmation.`;
 
@@ -129,8 +146,19 @@ export function buildRowPrompt(
   
   // Add model routing context
   const hasWebTools = (config.tools || []).some(t => ['search', 'web_scrape', 'web_research'].includes(t));
-  if (hasWebTools) {
-    system += '\n\nMODEL ROUTING: You have access to web tools powered by Perplexity (search-native AI). Use web_search or web_scrape tools to find live information. The tools automatically use Perplexity for accurate, cited results.';
+  const hasApolloTools = (config.tools || []).some(t => t.startsWith('apollo_'));
+  
+  if (hasWebTools || hasApolloTools) {
+    system += '\n\nMODEL ROUTING:';
+    if (hasWebTools) {
+      system += '\n- 🟢 Perplexity web tools available: Use web_search or web_scrape for live web information. Returns accurate, cited results.';
+    }
+    if (hasApolloTools) {
+      system += '\n- 🟣 Apollo.io tools available: Use apollo_enrich_person, apollo_enrich_company, apollo_search_people, or apollo_find_email for B2B contact/company data. Returns structured professional data (emails, titles, phone numbers, company details).';
+    }
+    if (hasWebTools && hasApolloTools) {
+      system += '\n- Use Apollo.io for structured B2B data (contact info, company firmographics). Use Perplexity for general web info (news, articles, reviews, pricing).';
+    }
   }
 
   system += '\n\nOUTPUT CONSTRAINTS:';
@@ -248,6 +276,153 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
           },
         },
         required: ['text', 'fields'],
+      },
+    });
+  }
+
+  // ---- 🟣 APOLLO.IO TOOLS ----
+
+  if (enabledTools.includes('apollo_enrich_person')) {
+    tools.push({
+      name: 'apollo_enrich_person',
+      description: 'Enrich a person using Apollo.io. Given a name + company/domain/email, returns their full professional profile: title, email, phone, LinkedIn URL, location, seniority, and company details. Best for B2B contact enrichment.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          first_name: {
+            type: 'string',
+            description: 'Person\'s first name',
+          },
+          last_name: {
+            type: 'string',
+            description: 'Person\'s last name',
+          },
+          name: {
+            type: 'string',
+            description: 'Full name (alternative to first_name + last_name)',
+          },
+          email: {
+            type: 'string',
+            description: 'Known email address (helps with matching)',
+          },
+          organization_name: {
+            type: 'string',
+            description: 'Company name the person works at',
+          },
+          domain: {
+            type: 'string',
+            description: 'Company website domain (e.g. "apollo.io")',
+          },
+          linkedin_url: {
+            type: 'string',
+            description: 'LinkedIn profile URL',
+          },
+        },
+        required: [],
+      },
+    });
+  }
+
+  if (enabledTools.includes('apollo_enrich_company')) {
+    tools.push({
+      name: 'apollo_enrich_company',
+      description: 'Enrich a company using Apollo.io. Given a domain or company name, returns detailed company data: industry, employee count, annual revenue, total funding, funding stage, tech stack, headquarters location, social links, and description.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          domain: {
+            type: 'string',
+            description: 'Company website domain (e.g. "apollo.io"). Preferred over name.',
+          },
+          name: {
+            type: 'string',
+            description: 'Company name (used if domain is not available)',
+          },
+        },
+        required: [],
+      },
+    });
+  }
+
+  if (enabledTools.includes('apollo_search_people')) {
+    tools.push({
+      name: 'apollo_search_people',
+      description: 'Search for people in Apollo.io\'s database. Find decision-makers, leads, or contacts matching specific criteria like job title, company, location, seniority level. Returns a list of matching professionals with their details.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          person_titles: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Job titles to search for (e.g. ["CEO", "CTO", "VP Sales"])',
+          },
+          organization_domains: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Company domains to search within (e.g. ["apollo.io", "google.com"])',
+          },
+          organization_names: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Company names to search within',
+          },
+          person_locations: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Locations to filter by (e.g. ["San Francisco", "United States"])',
+          },
+          person_seniorities: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Seniority levels (e.g. ["c_suite", "vp", "director", "manager"])',
+          },
+          q_keywords: {
+            type: 'string',
+            description: 'Keywords to search for in the person\'s profile',
+          },
+          per_page: {
+            type: 'number',
+            description: 'Number of results (1-25, default 10)',
+          },
+        },
+        required: [],
+      },
+    });
+  }
+
+  if (enabledTools.includes('apollo_find_email')) {
+    tools.push({
+      name: 'apollo_find_email',
+      description: 'Find a person\'s professional email address using Apollo.io. Given their name and company/domain, returns their verified work email. More reliable than guessing email patterns.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          first_name: {
+            type: 'string',
+            description: 'Person\'s first name',
+          },
+          last_name: {
+            type: 'string',
+            description: 'Person\'s last name',
+          },
+          name: {
+            type: 'string',
+            description: 'Full name (alternative to first_name + last_name)',
+          },
+          organization_name: {
+            type: 'string',
+            description: 'Company name',
+          },
+          domain: {
+            type: 'string',
+            description: 'Company domain (e.g. "apollo.io")',
+          },
+          linkedin_url: {
+            type: 'string',
+            description: 'LinkedIn profile URL (helps with matching)',
+          },
+        },
+        required: [],
       },
     });
   }

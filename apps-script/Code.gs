@@ -379,6 +379,8 @@ function getSettings() {
     backendUrl: PropertiesService.getScriptProperties().getProperty('BACKEND_URL') || '',
     apiKey: props.getProperty('api_key') ? '••••••••' : '',
     hasApiKey: !!props.getProperty('api_key'),
+    apolloApiKey: props.getProperty('apollo_api_key') ? '••••••••' : '',
+    hasApolloApiKey: !!props.getProperty('apollo_api_key'),
   };
 }
 
@@ -391,6 +393,9 @@ function saveSettings(settings) {
   }
   if (settings.apiKey && settings.apiKey !== '••••••••') {
     PropertiesService.getUserProperties().setProperty('api_key', settings.apiKey);
+  }
+  if (settings.apolloApiKey && settings.apolloApiKey !== '••••••••') {
+    PropertiesService.getUserProperties().setProperty('apollo_api_key', settings.apolloApiKey);
   }
   return { success: true };
 }

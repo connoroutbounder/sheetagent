@@ -23,7 +23,7 @@
 </head>
 <body>
   <h2>⚡ Agent Builder Settings</h2>
-  <p class="subtitle">Configure your backend connection.</p>
+  <p class="subtitle">Configure your backend and API connections.</p>
 
   <label>Backend URL</label>
   <input type="text" id="backendUrl" placeholder="https://your-project.supabase.co/functions/v1" />
@@ -32,6 +32,14 @@
   <label>API Key</label>
   <input type="password" id="apiKey" placeholder="Enter your API key" />
   <div class="help">Used to authenticate requests to your backend</div>
+
+  <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0 16px;" />
+  <h3 style="font-size: 15px; margin-bottom: 4px;">🔌 External APIs</h3>
+  <p class="subtitle" style="margin-bottom: 16px;">Connect external data sources to your agents.</p>
+
+  <label>🟣 Apollo.io API Key</label>
+  <input type="password" id="apolloApiKey" placeholder="Enter your Apollo.io API key" />
+  <div class="help">For contact/company enrichment, email finding, people search. Get yours at <a href="https://app.apollo.io/#/settings/integrations/api" target="_blank" style="color: #34d399;">Apollo Settings</a></div>
 
   <div class="btn-row">
     <button class="btn-primary" onclick="save()">Save</button>
@@ -45,12 +53,14 @@
     google.script.run.withSuccessHandler(function(settings) {
       if (settings.backendUrl) document.getElementById('backendUrl').value = settings.backendUrl;
       if (settings.apiKey) document.getElementById('apiKey').value = settings.apiKey;
+      if (settings.apolloApiKey) document.getElementById('apolloApiKey').value = settings.apolloApiKey;
     }).getSettings();
 
     function save() {
       const settings = {
         backendUrl: document.getElementById('backendUrl').value.trim(),
         apiKey: document.getElementById('apiKey').value.trim(),
+        apolloApiKey: document.getElementById('apolloApiKey').value.trim(),
       };
       google.script.run.withSuccessHandler(function() {
         showStatus('success', 'Settings saved!');

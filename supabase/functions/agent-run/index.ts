@@ -372,7 +372,11 @@ async function processBatchAsync(
       const result = await processRow(config, rowData, sheetContext, toolDefinitions);
 
       const hasWebTools = (config.tools || []).some(t => ['search', 'web_scrape', 'web_research'].includes(t));
-      const modelsUsed = hasWebTools ? `${MODEL} + perplexity/sonar` : MODEL;
+      const hasApolloTools = (config.tools || []).some(t => t.startsWith('apollo_'));
+      const modelParts = [MODEL];
+      if (hasWebTools) modelParts.push('perplexity/sonar');
+      if (hasApolloTools) modelParts.push('apollo.io');
+      const modelsUsed = modelParts.join(' + ');
 
       await supabase
         .from('run_rows')
