@@ -174,10 +174,13 @@ export function buildRowPrompt(
       system += '\n- **Enrich company**: apollo_enrich_company({ domain: "tesla.com" })';
       system += '\n- Always use company DOMAIN when available (more precise than company name).';
       system += '\n- NEVER enumerate all employees. Always use title/seniority filters to find specific roles.';
-      system += '\n- **Push to Apollo list**: apollo_add_contact_to_list({ list_name: "My List", first_name, last_name, email, title, organization_name }) — creates contact in CRM + adds to list';
-      system += '\n- **Push company to list**: apollo_add_account_to_list({ list_name: "My List", name: "Tesla", domain: "tesla.com" })';
-      system += '\n- **Get existing lists**: apollo_get_lists() — shows all contact and account lists with IDs';
-      system += '\n- **Create new list**: apollo_create_list({ name: "My New List", type: "contacts" })';
+      system += '\n\nAPOLLO LIST MANAGEMENT:';
+      system += '\n- **Push company to list**: apollo_add_account_to_list({ list_name: "My List", name: "Tesla", domain: "tesla.com" }) — DOMAIN IS REQUIRED. Apollo uses the domain to match the real company in their database and auto-enriches it.';
+      system += '\n- **CRITICAL**: Always pass the domain/website URL when adding accounts to lists. Full URLs like "https://www.tesla.com" are auto-stripped to "tesla.com".';
+      system += '\n- **Push contact to list**: apollo_add_contact_to_list({ list_name: "My List", first_name, last_name, email, title, organization_name })';
+      system += '\n- **Get existing lists**: apollo_get_lists() — shows all contact and account lists';
+      system += '\n- **Create new list**: apollo_create_list({ name: "My New List", type: "accounts" }) — type is "contacts" or "accounts"';
+      system += '\n- **Workflow for building company lists from sheet data**: For each row, read the company name and website/domain from the sheet columns, then call apollo_add_account_to_list with both name and domain.';
     }
     if (hasZerobounceTools) {
       system += '\n- 🟡 ZeroBounce tools available. Validates email deliverability and guesses email format patterns.';
@@ -554,7 +557,7 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
   if (enabledTools.includes('apollo_add_account_to_list')) {
     tools.push({
       name: 'apollo_add_account_to_list',
-      description: 'Add a company/account to an Apollo.io list. Creates the account in your CRM and adds it to the specified list. Provide the list name (not ID). If the list doesn\'t exist, use apollo_create_list first.',
+      description: 'Add a company/account to an Apollo.io list. Uses the DOMAIN to match the company in Apollo\'s database, enriches it with firmographic data (industry, size, funding, etc.), and adds it to the named list. ALWAYS provide the domain — it\'s the source of truth for finding the right company record. Full URLs (e.g. "https://www.tesla.com") are automatically stripped to bare domains.',
       input_schema: {
         type: 'object',
         properties: {
@@ -568,14 +571,14 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
           },
           domain: {
             type: 'string',
-            description: 'Company domain (e.g. "tesla.com")',
+            description: 'Company website or domain (e.g. "tesla.com" or "https://www.tesla.com"). This is the SOURCE OF TRUTH — Apollo uses this to match the correct company record.',
           },
           phone: {
             type: 'string',
             description: 'Company phone number',
           },
         },
-        required: ['list_name', 'name'],
+        required: ['list_name', 'name', 'domain'],
       },
     });
   }

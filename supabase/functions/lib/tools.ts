@@ -73,7 +73,7 @@ function getZerobounceApiKey(): string {
 }
 
 /**
- * Helper: makes an authenticated Apollo.io API request.
+ * Helper: makes an authenticated Apollo.io API request (POST).
  * Uses both header and body auth for maximum compatibility.
  */
 async function apolloRequest(endpoint: string, body: Record<string, any>): Promise<any> {
@@ -100,6 +100,52 @@ async function apolloRequest(endpoint: string, body: Record<string, any>): Promi
   }
 
   return response.json();
+}
+
+/**
+ * Helper: makes an authenticated Apollo.io PUT request.
+ * Used for updating existing records (e.g. adding labels).
+ */
+async function apolloRequestPut(endpoint: string, body: Record<string, any>): Promise<any> {
+  const apiKey = getApolloApiKey();
+  if (!apiKey) {
+    throw new Error('Apollo.io API key not configured.');
+  }
+  
+  body.api_key = apiKey;
+  
+  const response = await fetch(`${APOLLO_BASE_URL}${endpoint}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-cache',
+      'X-Api-Key': apiKey,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Apollo API error (${response.status}): ${errText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Helper: strips a URL to a bare domain.
+ * "https://www.circuithub.com/about" → "circuithub.com"
+ */
+function stripToDomain(input: string): string {
+  if (!input) return input;
+  let domain = input.trim();
+  // Remove protocol
+  domain = domain.replace(/^https?:\/\//, '');
+  // Remove www.
+  domain = domain.replace(/^www\./, '');
+  // Remove path/query
+  domain = domain.split('/')[0].split('?')[0].split('#')[0];
+  return domain.toLowerCase();
 }
 
 // =============================================================
@@ -476,7 +522,7 @@ async function apolloEnrichPerson(input: {
   if (lastName) body.last_name = lastName;
   if (input.email) body.email = input.email;
   if (input.organization_name) body.organization_name = input.organization_name;
-  if (input.domain) body.domain = input.domain;
+  if (input.domain) body.domain = stripToDomain(input.domain);
   if (input.linkedin_url) body.linkedin_url = input.linkedin_url;
 
   try {
@@ -502,8 +548,8 @@ async function apolloEnrichCompany(input: {
   }
 
   const body: Record<string, any> = {};
-  if (input.domain) body.domain = input.domain;
-  if (input.name && !input.domain) body.domain = input.name;
+  if (input.domain) body.domain = stripToDomain(input.domain);
+  if (input.name && !input.domain) body.domain = stripToDomain(input.name);
 
   try {
     const data = await apolloRequest('/v1/organizations/enrich', body);
@@ -570,7 +616,7 @@ async function apolloSearchPeople(input: {
   };
 
   if (input.person_titles) body.person_titles = input.person_titles;
-  if (input.organization_domains) body.q_organization_domains = input.organization_domains.join('\n');
+  if (input.organization_domains) body.q_organization_domains = input.organization_domains.map(stripToDomain).join('\n');
   if (input.organization_names) body.organization_names = input.organization_names;
   if (input.person_locations) body.person_locations = input.person_locations;
   if (input.person_seniorities) body.person_seniorities = input.person_seniorities;
@@ -654,7 +700,7 @@ async function apolloFindEmail(input: {
       reveal_personal_emails: true,
     };
     if (input.organization_name) body.organization_name = input.organization_name;
-    if (input.domain) body.domain = input.domain;
+    if (input.domain) body.domain = stripToDomain(input.domain);
     if (input.linkedin_url) body.linkedin_url = input.linkedin_url;
 
     try {
@@ -687,7 +733,7 @@ async function apolloFindEmail(input: {
       person_titles: [input.title],
       per_page: 1,
     };
-    if (input.domain) searchBody.q_organization_domains = input.domain;
+    if (input.domain) searchBody.q_organization_domains = stripToDomain(input.domain);
     if (input.organization_name) searchBody.organization_names = [input.organization_name];
 
     try {
@@ -836,7 +882,10 @@ async function apolloAddContactToList(input: {
   if (input.email) body.email = input.email;
   if (input.title) body.title = input.title;
   if (input.organization_name) body.organization_name = input.organization_name;
-  if (input.domain) body.website_url = input.domain.startsWith('http') ? input.domain : `https://${input.domain}`;
+  if (input.domain) {
+    const d = stripToDomain(input.domain);
+    body.website_url = `https://${d}`;
+  }
   if (input.linkedin_url) body.linkedin_url = input.linkedin_url;
   if (input.phone) body.phone_numbers = [{ raw_number: input.phone }];
 
@@ -868,7 +917,14 @@ async function apolloAddContactToList(input: {
 
 /**
  * Adds a company (account) to an Apollo list.
- * Creates the account in the user's CRM if it doesn't exist.
+ * 
+ * TWO-STEP PROCESS (Apollo doesn't apply labels during creation):
+ * 1. Create/upsert the account using the domain → Apollo auto-enriches
+ *    it against their database, matching to the real company record.
+ * 2. Update the account to assign it to the list (label).
+ * 
+ * The domain/website URL is the source of truth — it tells Apollo
+ * which company record to match against (e.g. "circuithub.com" → CircuitHub).
  */
 async function apolloAddAccountToList(input: {
   list_name: string;
@@ -880,28 +936,43 @@ async function apolloAddAccountToList(input: {
     return 'Apollo.io unavailable: No API key configured.';
   }
 
-  const body: Record<string, any> = {
-    name: input.name,
-    label_names: [input.list_name],
-  };
+  // Strip URL to bare domain for Apollo matching
+  const domain = input.domain ? stripToDomain(input.domain) : undefined;
 
-  if (input.domain) body.domain = input.domain;
-  if (input.phone) body.phone = input.phone;
+  // Step 1: Create/find the account — Apollo auto-enriches from domain
+  const createBody: Record<string, any> = {
+    name: input.name,
+  };
+  if (domain) createBody.domain = domain;
+  if (input.phone) createBody.phone = input.phone;
 
   try {
-    const data = await apolloRequest('/v1/accounts', body);
+    const data = await apolloRequest('/v1/accounts', createBody);
     const account = data.account;
 
     if (!account) {
-      return `Failed to add ${input.name} to list "${input.list_name}".`;
+      return `Failed to create account for ${input.name}. Apollo returned no account record.`;
+    }
+
+    // Step 2: Update the account to assign the list label
+    // (Apollo ignores label_names in the create call for accounts)
+    try {
+      await apolloRequestPut(`/v1/accounts/${account.id}`, {
+        label_names: [input.list_name],
+      });
+    } catch (updateErr) {
+      // Account was created but label assignment failed
+      return `Account "${account.name}" created (ID: ${account.id}) but failed to add to list "${input.list_name}": ${updateErr.message}`;
     }
 
     const fields: string[] = [];
-    fields.push(`✅ Added to list "${input.list_name}"`);
-    fields.push(`Company: ${account.name}`);
+    fields.push(`✅ Added "${account.name}" to list "${input.list_name}"`);
+    if (account.primary_domain || account.domain) fields.push(`Domain: ${account.primary_domain || account.domain}`);
     if (account.website_url) fields.push(`Website: ${account.website_url}`);
     if (account.industry) fields.push(`Industry: ${account.industry}`);
     if (account.estimated_num_employees) fields.push(`Employees: ${account.estimated_num_employees}`);
+    if (account.founded_year) fields.push(`Founded: ${account.founded_year}`);
+    if (account.linkedin_url) fields.push(`LinkedIn: ${account.linkedin_url}`);
     fields.push(`Apollo Account ID: ${account.id}`);
 
     return fields.join('\n');
@@ -1134,9 +1205,9 @@ async function zerobounceGetCredits(): Promise<string> {
  */
 function truncateResult(text: string, maxChars: number): string {
   if (!text || text.length <= maxChars) return text;
-
+  
   const truncated = text.substring(0, maxChars);
   const lastSpace = truncated.lastIndexOf(' ');
-
+  
   return truncated.substring(0, lastSpace > maxChars * 0.8 ? lastSpace : maxChars) + '\n[...truncated]';
 }
