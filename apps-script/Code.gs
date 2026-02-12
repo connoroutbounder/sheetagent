@@ -338,3 +338,14 @@ function saveSettings(settings) {
   }
   return { success: true };
 }
+
+/**
+ * One-time setup: configure Supabase connection properties.
+ * Run this function manually after deploying.
+ */
+function setupSupabase() {
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty('BACKEND_URL', 'https://djvyqtiespdxevlqacue.supabase.co/functions/v1');
+  props.setProperty('SUPABASE_ANON_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRqdnlxdGllc3BkeGV2bHFhY3VlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA5MTU0NzAsImV4cCI6MjA4NjQ5MTQ3MH0.LNVXe6oQdNzWo2jA1h5M3ChdjpZ7drOrAkBqtSWjcJ4');
+  Logger.log('Supabase properties set successfully!');
+}

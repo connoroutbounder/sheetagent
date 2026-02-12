@@ -45,6 +45,7 @@ const ApiClient = {
       contentType: 'application/json',
       headers: {
         'Authorization': 'Bearer ' + token,
+        'apikey': token,
         'X-Spreadsheet-Id': SpreadsheetApp.getActiveSpreadsheet().getId(),
         'X-User-Email': Session.getActiveUser().getEmail(),
       },
@@ -129,17 +130,17 @@ const ApiClient = {
   },
 
   /**
-   * Gets or creates an auth token for backend requests.
-   * Uses the Google OAuth token + user email as a lightweight auth mechanism.
+   * Gets the auth token for Supabase Edge Function requests.
+   * Supabase requires the anon key as a Bearer token.
    * @private
    */
   _getAuthToken: function() {
-    // Use the user's API key if set
-    const apiKey = PropertiesService.getUserProperties().getProperty('api_key');
-    if (apiKey) return apiKey;
+    // Use Supabase anon key from script properties, or fall back to default
+    var anonKey = PropertiesService.getScriptProperties().getProperty('SUPABASE_ANON_KEY');
+    if (anonKey) return anonKey;
     
-    // Fall back to Google OAuth token (works for same-org backends)
-    return ScriptApp.getOAuthToken();
+    // Default anon key (public by design — Supabase anon keys are client-safe)
+    return 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRqdnlxdGllc3BkeGV2bHFhY3VlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA5MTU0NzAsImV4cCI6MjA4NjQ5MTQ3MH0.LNVXe6oQdNzWo2jA1h5M3ChdjpZ7drOrAkBqtSWjcJ4';
   },
 
   /**
