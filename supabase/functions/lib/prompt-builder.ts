@@ -39,6 +39,7 @@ AVAILABLE CONTEXT:
 AVAILABLE TOOL CATEGORIES:
 - 🟢 Perplexity web tools: web_search, web_scrape, web_research — for live web lookups, finding websites, news, general research
 - 🟣 Apollo.io tools: apollo_enrich_person, apollo_enrich_company, apollo_search_people, apollo_find_email — for B2B contact/company data, email finding, professional enrichment
+- 🟣 Apollo.io list tools: apollo_get_lists, apollo_create_list, apollo_add_contact_to_list, apollo_add_account_to_list — for pushing leads/companies into Apollo saved lists
 - 🟡 ZeroBounce tools: zerobounce_validate, zerobounce_batch_validate, zerobounce_guess_format — for email verification, deliverability checks, email format detection
 - 🔵 Claude (you): reasoning, analysis, summarization, writing, data transformation — no tool call needed`;
 
@@ -49,7 +50,7 @@ You can see the user's active sheet structure — headers, column types, sample 
 YOU HAVE FOUR TOOL CATEGORIES:
 - **🔵 Claude** (you) — reasoning, analysis, summarization, writing, classification, data transformation
 - **🟢 Perplexity** — web search, finding URLs, live data lookup, general web research, news, anything requiring fresh internet data
-- **🟣 Apollo.io** — B2B sales intelligence: contact enrichment (name → email, phone, title, LinkedIn), company enrichment (domain → industry, size, revenue, funding, tech stack), people search (find decision-makers by title/company/location), email finding
+- **🟣 Apollo.io** — B2B sales intelligence: contact enrichment (name → email, phone, title, LinkedIn), company enrichment (domain → industry, size, revenue, funding, tech stack), people search (find decision-makers by title/company/location), email finding, AND list management (get lists, create lists, add contacts/companies to lists)
 - **🟡 ZeroBounce** — email verification and validation: checks if emails are deliverable (valid/invalid/catch-all/disposable), detects email format patterns for domains, and can construct probable emails from name + domain
 
 TOOL ROUTING RULES:
@@ -64,7 +65,8 @@ TOOL ROUTING RULES:
 CRITICAL RULES:
 - BE DECISIVE. When the user tells you what they want, BUILD THE AGENT IMMEDIATELY.
 - ALWAYS mention which tool(s)/model(s) will be used and why. Example: "I'll use 🟣 Apollo.io to enrich each contact since we need professional email addresses and titles."
-- If a task needs Apollo.io → set tools to include "apollo_enrich_person", "apollo_enrich_company", "apollo_search_people", or "apollo_find_email"
+- If a task needs Apollo.io enrichment → set tools to include "apollo_enrich_person", "apollo_enrich_company", "apollo_search_people", or "apollo_find_email"
+- If a task needs to push leads/companies to Apollo lists → set tools to include "apollo_get_lists", "apollo_create_list", "apollo_add_contact_to_list", or "apollo_add_account_to_list"
 - If a task needs email validation → set tools to include "zerobounce_validate" or "zerobounce_batch_validate"
 - If a task needs to guess/construct emails from names → set tools to include "zerobounce_guess_format"
 - If a task needs web data → set tools to include "search" and/or "web_scrape" (these use Perplexity under the hood)
@@ -98,7 +100,8 @@ When you're ready (which should usually be your FIRST response), include this JS
 
 TOOL NAME REFERENCE:
 - Perplexity web tools: "search", "web_scrape", "web_research"
-- Apollo.io tools: "apollo_enrich_person", "apollo_enrich_company", "apollo_search_people", "apollo_find_email"
+- Apollo.io enrichment tools: "apollo_enrich_person", "apollo_enrich_company", "apollo_search_people", "apollo_find_email"
+- Apollo.io list tools: "apollo_get_lists", "apollo_create_list", "apollo_add_contact_to_list", "apollo_add_account_to_list"
 - ZeroBounce tools: "zerobounce_validate", "zerobounce_batch_validate", "zerobounce_guess_format", "zerobounce_credits"
 
 IMPORTANT: Include the agent_config block as soon as the user's intent is clear. Do not wait for multiple rounds of confirmation.`;
@@ -171,6 +174,10 @@ export function buildRowPrompt(
       system += '\n- **Enrich company**: apollo_enrich_company({ domain: "tesla.com" })';
       system += '\n- Always use company DOMAIN when available (more precise than company name).';
       system += '\n- NEVER enumerate all employees. Always use title/seniority filters to find specific roles.';
+      system += '\n- **Push to Apollo list**: apollo_add_contact_to_list({ list_name: "My List", first_name, last_name, email, title, organization_name }) — creates contact in CRM + adds to list';
+      system += '\n- **Push company to list**: apollo_add_account_to_list({ list_name: "My List", name: "Tesla", domain: "tesla.com" })';
+      system += '\n- **Get existing lists**: apollo_get_lists() — shows all contact and account lists with IDs';
+      system += '\n- **Create new list**: apollo_create_list({ name: "My New List", type: "contacts" })';
     }
     if (hasZerobounceTools) {
       system += '\n- 🟡 ZeroBounce tools available. Validates email deliverability and guesses email format patterns.';
@@ -455,6 +462,120 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
           },
         },
         required: [],
+      },
+    });
+  }
+
+  // ---- 🟣 APOLLO.IO LIST MANAGEMENT TOOLS ----
+
+  if (enabledTools.includes('apollo_get_lists')) {
+    tools.push({
+      name: 'apollo_get_lists',
+      description: 'Get all saved lists from your Apollo.io account. Returns both contact lists and account lists with their names, IDs, and counts. Use this to find existing lists before adding contacts/companies.',
+      input_schema: {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+    });
+  }
+
+  if (enabledTools.includes('apollo_create_list')) {
+    tools.push({
+      name: 'apollo_create_list',
+      description: 'Create a new list in Apollo.io. Use type "contacts" for people lists or "accounts" for company lists. The list can then be used to add contacts or companies to.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: 'Name for the new list (e.g. "Q1 2026 Outreach Targets")',
+          },
+          type: {
+            type: 'string',
+            enum: ['contacts', 'accounts'],
+            description: 'Type of list: "contacts" for people, "accounts" for companies. Default: contacts.',
+          },
+        },
+        required: ['name'],
+      },
+    });
+  }
+
+  if (enabledTools.includes('apollo_add_contact_to_list')) {
+    tools.push({
+      name: 'apollo_add_contact_to_list',
+      description: 'Add a person/contact to an Apollo.io list. Creates the contact in your CRM and adds them to the specified list. Provide the list name (not ID). If the list doesn\'t exist, use apollo_create_list first.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          list_name: {
+            type: 'string',
+            description: 'The exact name of the Apollo list to add the contact to',
+          },
+          first_name: {
+            type: 'string',
+            description: 'Contact\'s first name',
+          },
+          last_name: {
+            type: 'string',
+            description: 'Contact\'s last name',
+          },
+          email: {
+            type: 'string',
+            description: 'Contact\'s email address',
+          },
+          title: {
+            type: 'string',
+            description: 'Contact\'s job title',
+          },
+          organization_name: {
+            type: 'string',
+            description: 'Contact\'s company name',
+          },
+          domain: {
+            type: 'string',
+            description: 'Company domain (e.g. "tesla.com")',
+          },
+          linkedin_url: {
+            type: 'string',
+            description: 'Contact\'s LinkedIn profile URL',
+          },
+          phone: {
+            type: 'string',
+            description: 'Contact\'s phone number',
+          },
+        },
+        required: ['list_name', 'first_name', 'last_name'],
+      },
+    });
+  }
+
+  if (enabledTools.includes('apollo_add_account_to_list')) {
+    tools.push({
+      name: 'apollo_add_account_to_list',
+      description: 'Add a company/account to an Apollo.io list. Creates the account in your CRM and adds it to the specified list. Provide the list name (not ID). If the list doesn\'t exist, use apollo_create_list first.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          list_name: {
+            type: 'string',
+            description: 'The exact name of the Apollo list to add the company to',
+          },
+          name: {
+            type: 'string',
+            description: 'Company name',
+          },
+          domain: {
+            type: 'string',
+            description: 'Company domain (e.g. "tesla.com")',
+          },
+          phone: {
+            type: 'string',
+            description: 'Company phone number',
+          },
+        },
+        required: ['list_name', 'name'],
       },
     });
   }

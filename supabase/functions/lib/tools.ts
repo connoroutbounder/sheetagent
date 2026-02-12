@@ -131,6 +131,14 @@ export async function executeTool(toolCall: ToolCall): Promise<string> {
         return await apolloSearchPeople(input);
       case 'apollo_find_email':
         return await apolloFindEmail(input);
+      case 'apollo_get_lists':
+        return await apolloGetLists();
+      case 'apollo_create_list':
+        return await apolloCreateList(input);
+      case 'apollo_add_contact_to_list':
+        return await apolloAddContactToList(input);
+      case 'apollo_add_account_to_list':
+        return await apolloAddAccountToList(input);
 
       // 🟡 ZeroBounce tools
       case 'zerobounce_validate':
@@ -709,6 +717,197 @@ async function apolloFindEmail(input: {
   }
 
   return 'Not enough information to find email. Provide either (name + company) or (title + company domain).';
+}
+
+// =============================================================
+// APOLLO.IO LIST MANAGEMENT TOOLS
+// =============================================================
+
+/**
+ * Fetches all saved lists (labels) from Apollo.io.
+ * Returns both contact lists and account lists.
+ */
+async function apolloGetLists(): Promise<string> {
+  if (!getApolloApiKey()) {
+    return 'Apollo.io unavailable: No API key configured. Add your Apollo API key in the sidebar Settings.';
+  }
+
+  try {
+    const response = await fetch(`${APOLLO_BASE_URL}/api/v1/labels`, {
+      headers: {
+        'X-Api-Key': getApolloApiKey(),
+        'Cache-Control': 'no-cache',
+      },
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Apollo API error (${response.status}): ${errText}`);
+    }
+
+    const labels: any[] = await response.json();
+
+    if (!labels || labels.length === 0) {
+      return 'No lists found in your Apollo account.';
+    }
+
+    const contactLists = labels.filter((l: any) => l.modality === 'contacts');
+    const accountLists = labels.filter((l: any) => l.modality === 'accounts');
+
+    let result = '';
+
+    if (contactLists.length > 0) {
+      result += `📋 Contact Lists (${contactLists.length}):\n`;
+      for (const l of contactLists) {
+        result += `  • "${l.name}" — ${l.cached_count || 0} contacts (ID: ${l.id})\n`;
+      }
+    }
+
+    if (accountLists.length > 0) {
+      result += `\n🏢 Account Lists (${accountLists.length}):\n`;
+      for (const l of accountLists) {
+        result += `  • "${l.name}" — ${l.cached_count || 0} accounts (ID: ${l.id})\n`;
+      }
+    }
+
+    return result || 'No lists found.';
+  } catch (e) {
+    return `Apollo get lists error: ${e.message}`;
+  }
+}
+
+/**
+ * Creates a new list (label) in Apollo.io.
+ * Can be a contacts list or an accounts list.
+ */
+async function apolloCreateList(input: {
+  name: string;
+  type?: string; // "contacts" or "accounts"
+}): Promise<string> {
+  if (!getApolloApiKey()) {
+    return 'Apollo.io unavailable: No API key configured.';
+  }
+
+  const modality = input.type === 'accounts' ? 'accounts' : 'contacts';
+
+  try {
+    const data = await apolloRequest('/api/v1/labels', {
+      name: input.name,
+      modality: modality,
+    });
+
+    const label = data.label;
+    if (!label) {
+      return `Failed to create list "${input.name}".`;
+    }
+
+    return `✅ Created ${modality} list: "${label.name}" (ID: ${label.id})`;
+  } catch (e) {
+    return `Apollo create list error: ${e.message}`;
+  }
+}
+
+/**
+ * Adds a contact (person) to an Apollo list.
+ * Creates the contact in the user's CRM if it doesn't exist.
+ * Requires at minimum: first_name, last_name, email.
+ */
+async function apolloAddContactToList(input: {
+  list_name: string;
+  first_name: string;
+  last_name: string;
+  email?: string;
+  title?: string;
+  organization_name?: string;
+  domain?: string;
+  linkedin_url?: string;
+  phone?: string;
+}): Promise<string> {
+  if (!getApolloApiKey()) {
+    return 'Apollo.io unavailable: No API key configured.';
+  }
+
+  const body: Record<string, any> = {
+    first_name: input.first_name,
+    last_name: input.last_name,
+    label_names: [input.list_name],
+  };
+
+  if (input.email) body.email = input.email;
+  if (input.title) body.title = input.title;
+  if (input.organization_name) body.organization_name = input.organization_name;
+  if (input.domain) body.website_url = input.domain.startsWith('http') ? input.domain : `https://${input.domain}`;
+  if (input.linkedin_url) body.linkedin_url = input.linkedin_url;
+  if (input.phone) body.phone_numbers = [{ raw_number: input.phone }];
+
+  try {
+    const data = await apolloRequest('/v1/contacts', body);
+    const contact = data.contact;
+
+    if (!contact) {
+      return `Failed to add ${input.first_name} ${input.last_name} to list "${input.list_name}".`;
+    }
+
+    const fields: string[] = [];
+    fields.push(`✅ Added to list "${input.list_name}"`);
+    fields.push(`Name: ${contact.name || `${input.first_name} ${input.last_name}`}`);
+    if (contact.email) fields.push(`Email: ${contact.email}`);
+    if (contact.title) fields.push(`Title: ${contact.title}`);
+    if (contact.organization_name) fields.push(`Company: ${contact.organization_name}`);
+    fields.push(`Apollo Contact ID: ${contact.id}`);
+
+    return fields.join('\n');
+  } catch (e) {
+    // Handle duplicate - the contact might already exist
+    if (e.message?.includes('422') || e.message?.includes('already exists')) {
+      return `Contact ${input.first_name} ${input.last_name} may already exist in your CRM. Try updating the existing contact instead.`;
+    }
+    return `Apollo add contact error: ${e.message}`;
+  }
+}
+
+/**
+ * Adds a company (account) to an Apollo list.
+ * Creates the account in the user's CRM if it doesn't exist.
+ */
+async function apolloAddAccountToList(input: {
+  list_name: string;
+  name: string;
+  domain?: string;
+  phone?: string;
+}): Promise<string> {
+  if (!getApolloApiKey()) {
+    return 'Apollo.io unavailable: No API key configured.';
+  }
+
+  const body: Record<string, any> = {
+    name: input.name,
+    label_names: [input.list_name],
+  };
+
+  if (input.domain) body.domain = input.domain;
+  if (input.phone) body.phone = input.phone;
+
+  try {
+    const data = await apolloRequest('/v1/accounts', body);
+    const account = data.account;
+
+    if (!account) {
+      return `Failed to add ${input.name} to list "${input.list_name}".`;
+    }
+
+    const fields: string[] = [];
+    fields.push(`✅ Added to list "${input.list_name}"`);
+    fields.push(`Company: ${account.name}`);
+    if (account.website_url) fields.push(`Website: ${account.website_url}`);
+    if (account.industry) fields.push(`Industry: ${account.industry}`);
+    if (account.estimated_num_employees) fields.push(`Employees: ${account.estimated_num_employees}`);
+    fields.push(`Apollo Account ID: ${account.id}`);
+
+    return fields.join('\n');
+  } catch (e) {
+    return `Apollo add account error: ${e.message}`;
+  }
 }
 
 // =============================================================
