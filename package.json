@@ -1,0 +1,23 @@
+{
+  "name": "sheets-agent-builder",
+  "version": "0.1.0",
+  "description": "A sidebar-native AI agent builder for Google Sheets. Build, configure, and run AI agents that process your spreadsheet data row by row.",
+  "private": true,
+  "scripts": {
+    "deploy:functions": "supabase functions deploy",
+    "deploy:migration": "supabase db push",
+    "clasp:push": "cd apps-script && clasp push",
+    "clasp:pull": "cd apps-script && clasp pull",
+    "dev": "supabase start"
+  },
+  "keywords": [
+    "google-sheets",
+    "ai-agent",
+    "agent-builder",
+    "supabase",
+    "claude",
+    "automation"
+  ],
+  "author": "Outbounder",
+  "license": "MIT"
+}

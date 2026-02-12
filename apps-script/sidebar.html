@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    /* ============================================
+       AGENT BUILDER SIDEBAR — Chat UI
+       ============================================ */
+    
+    :root {
+      --bg: #0f1419;
+      --surface: #1a2332;
+      --surface-2: #222d3d;
+      --border: #2a3545;
+      --text: #e2e8f0;
+      --text-muted: #8899aa;
+      --accent: #34d399;
+      --accent-dim: #065f46;
+      --accent-blue: #60a5fa;
+      --accent-blue-dim: #1e3a5f;
+      --error: #f87171;
+      --error-dim: #4c1d1d;
+      --warning: #fbbf24;
+      --radius: 12px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    /* ---- HEADER ---- */
+    .header {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .logo {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-blue));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .header-text { flex: 1; }
+    .header-title { font-weight: 600; font-size: 14px; }
+    .header-sub { font-size: 11px; color: var(--text-muted); }
+
+    .header-actions { display: flex; gap: 6px; }
+    .header-btn {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      transition: all 0.15s;
+    }
+    .header-btn:hover { background: var(--surface-2); color: var(--text); }
+
+    /* ---- TABS ---- */
+    .tabs {
+      display: flex;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .tab {
+      flex: 1;
+      padding: 10px;
+      text-align: center;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.15s;
+    }
+
+    .tab:hover { color: var(--text); background: var(--surface); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    /* ---- PANELS ---- */
+    .panel {
+      flex: 1;
+      overflow-y: auto;
+      display: none;
+    }
+    .panel.active { display: flex; flex-direction: column; }
+
+    /* ---- CHAT PANEL ---- */
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .msg {
+      max-width: 92%;
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-size: 13px;
+      line-height: 1.55;
+      animation: fadeIn 0.25s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .msg.agent {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      align-self: flex-start;
+      border-bottom-left-radius: 4px;
+    }
+
+    .msg.user {
+      background: var(--accent-blue-dim);
+      border: 1px solid #2d4a6f;
+      align-self: flex-end;
+      border-bottom-right-radius: 4px;
+    }
+
+    .msg.system {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      align-self: center;
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-muted);
+      padding: 8px 16px;
+      border-radius: 20px;
+    }
+
+    .msg.error {
+      background: var(--error-dim);
+      border: 1px solid var(--error);
+      color: var(--error);
+      align-self: center;
+      font-size: 12px;
+    }
+
+    .msg code, .msg .code {
+      font-family: 'SF Mono', 'Cascadia Code', monospace;
+      font-size: 11px;
+      background: rgba(52, 211, 153, 0.1);
+      color: var(--accent);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+
+    .msg strong { color: var(--text); font-weight: 600; }
+
+    .msg .plan-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      margin: 4px 0;
+    }
+
+    .msg .plan-item::before {
+      content: '→';
+      color: var(--accent);
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+
+    /* ---- PROGRESS BAR ---- */
+    .progress-bar {
+      padding: 12px 16px;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      display: none;
+      flex-shrink: 0;
+    }
+
+    .progress-bar.active { display: block; }
+
+    .progress-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .progress-label { font-size: 12px; font-weight: 500; }
+    .progress-count { font-size: 11px; color: var(--text-muted); font-family: monospace; }
+
+    .progress-track {
+      width: 100%;
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 2px;
+      transition: width 0.3s ease;
+      width: 0%;
+    }
+
+    .progress-current {
+      margin-top: 6px;
+      font-size: 11px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .progress-current .spinner {
+      width: 12px;
+      height: 12px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .progress-actions {
+      margin-top: 8px;
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn-stop {
+      font-size: 11px;
+      padding: 4px 12px;
+      border-radius: 6px;
+      background: var(--error-dim);
+      border: 1px solid var(--error);
+      color: var(--error);
+      cursor: pointer;
+    }
+
+    /* ---- INPUT ---- */
+    .input-area {
+      padding: 12px 16px;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 8px;
+      align-items: flex-end;
+    }
+
+    .input-wrapper {
+      flex: 1;
+      position: relative;
+    }
+
+    textarea {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-size: 13px;
+      color: var(--text);
+      font-family: inherit;
+      resize: none;
+      outline: none;
+      min-height: 40px;
+      max-height: 120px;
+      line-height: 1.4;
+      transition: border-color 0.15s;
+    }
+
+    textarea:focus { border-color: var(--accent); }
+    textarea::placeholder { color: var(--text-muted); }
+
+    .send-btn {
+      width: 38px;
+      height: 38px;
+      border-radius: 10px;
+      background: var(--accent);
+      border: none;
+      color: #000;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      font-weight: 700;
+      flex-shrink: 0;
+      transition: opacity 0.15s;
+    }
+
+    .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .send-btn:hover:not(:disabled) { opacity: 0.85; }
+
+    /* ---- AGENTS PANEL ---- */
+    .agents-list {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .agents-empty {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--text-muted);
+    }
+
+    .agents-empty-icon { font-size: 32px; margin-bottom: 12px; }
+
+    .agent-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .agent-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+    .agent-card-name { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+    .agent-card-desc { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+    
+    .agent-card-meta {
+      display: flex;
+      gap: 12px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .agent-card-meta span { display: flex; align-items: center; gap: 4px; }
+
+    /* ---- CONTEXT PANEL ---- */
+    .context-panel {
+      padding: 16px;
+    }
+
+    .context-section {
+      margin-bottom: 20px;
+    }
+
+    .context-section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .context-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      font-size: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .context-item:last-child { border: none; }
+    .context-item .label { color: var(--text-muted); }
+    .context-item .value { font-weight: 500; font-family: monospace; font-size: 11px; }
+
+    .col-tag {
+      display: inline-block;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-right: 4px;
+    }
+
+    .col-tag.input { background: var(--accent-blue-dim); color: var(--accent-blue); }
+    .col-tag.output { background: var(--accent-dim); color: var(--accent); }
+    .col-tag.status { background: rgba(251, 191, 36, 0.15); color: var(--warning); }
+
+    /* Scrollbar styling */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--surface-2); }
+  </style>
+</head>
+<body>
+
+  <!-- HEADER -->
+  <div class="header">
+    <div class="logo">⚡</div>
+    <div class="header-text">
+      <div class="header-title">Agent Builder</div>
+      <div class="header-sub" id="sheetName">Loading sheet...</div>
+    </div>
+    <div class="header-actions">
+      <button class="header-btn" onclick="refreshContext()" title="Refresh sheet context">↻</button>
+    </div>
+  </div>
+
+  <!-- TABS -->
+  <div class="tabs">
+    <div class="tab active" data-panel="chat" onclick="switchTab('chat')">💬 Chat</div>
+    <div class="tab" data-panel="agents" onclick="switchTab('agents')">📦 Agents</div>
+    <div class="tab" data-panel="context" onclick="switchTab('context')">📊 Context</div>
+  </div>
+
+  <!-- CHAT PANEL -->
+  <div class="panel active" id="panel-chat">
+    <div class="messages" id="messages"></div>
+    
+    <div class="progress-bar" id="progressBar">
+      <div class="progress-header">
+        <span class="progress-label" id="progressLabel">Processing rows...</span>
+        <span class="progress-count" id="progressCount">0 / 0</span>
+      </div>
+      <div class="progress-track">
+        <div class="progress-fill" id="progressFill"></div>
+      </div>
+      <div class="progress-current" id="progressCurrent">
+        <div class="spinner"></div>
+        <span>Starting...</span>
+      </div>
+      <div class="progress-actions">
+        <button class="btn-stop" onclick="stopAgent()">⏹ Stop</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- AGENTS PANEL -->
+  <div class="panel" id="panel-agents">
+    <div class="agents-list" id="agentsList">
+      <div class="agents-empty">
+        <div class="agents-empty-icon">📦</div>
+        <div style="font-weight: 500; margin-bottom: 4px;">No saved agents yet</div>
+        <div style="font-size: 12px;">Chat with the agent to create one, then save it for reuse.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONTEXT PANEL -->
+  <div class="panel" id="panel-context">
+    <div class="context-panel" id="contextContent">
+      <div class="context-section">
+        <div class="context-section-title">Loading sheet context...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- INPUT -->
+  <div class="input-area">
+    <div class="input-row">
+      <div class="input-wrapper">
+        <textarea 
+          id="input" 
+          placeholder="Tell the agent what to do..." 
+          rows="1"
+          onkeydown="handleKeydown(event)"
+          oninput="autoResize(this)"
+        ></textarea>
+      </div>
+      <button class="send-btn" id="sendBtn" onclick="sendMessage()">→</button>
+    </div>
+  </div>
+
+  <script>
+    // ========================================================
+    // STATE
+    // ========================================================
+    let sheetContext = null;
+    let currentJobId = null;
+    let pollInterval = null;
+    let conversationHistory = [];
+    let isProcessing = false;
+
+    // ========================================================
+    // INITIALIZATION
+    // ========================================================
+    
+    function init() {
+      loadSheetContext();
+      loadAgents();
+    }
+
+    function loadSheetContext() {
+      google.script.run
+        .withSuccessHandler(function(ctx) {
+          sheetContext = ctx;
+          updateSheetInfo(ctx);
+          renderContextPanel(ctx);
+          addWelcomeMessage(ctx);
+        })
+        .withFailureHandler(function(err) {
+          addMessage('error', 'Failed to read sheet: ' + err.message);
+        })
+        .getSheetContext();
+    }
+
+    function refreshContext() {
+      document.getElementById('sheetName').textContent = 'Refreshing...';
+      loadSheetContext();
+    }
+
+    function updateSheetInfo(ctx) {
+      if (ctx.isEmpty) {
+        document.getElementById('sheetName').textContent = ctx.sheetName + ' (empty)';
+      } else {
+        document.getElementById('sheetName').textContent = ctx.sheetName + ' · ' + ctx.rowCount + ' rows';
+      }
+    }
+
+    // ========================================================
+    // CHAT LOGIC
+    // ========================================================
+
+    function addWelcomeMessage(ctx) {
+      if (conversationHistory.length > 0) return;
+
+      if (ctx.isEmpty) {
+        addMessage('agent', 
+          'I can see your sheet <code>' + ctx.sheetName + '</code> is empty. ' +
+          'Add some data and headers, then I can help you build an agent to process it.'
+        );
+        return;
+      }
+
+      // Build a smart welcome message based on sheet analysis
+      let welcome = 'I can see your sheet <code>' + ctx.sheetName + '</code> with ' +
+        '<strong>' + ctx.rowCount + ' rows</strong> and ' + ctx.columnCount + ' columns.';
+
+      // Describe what we found
+      const cols = ctx.columns || [];
+      const inputCols = cols.filter(c => c.fillRate > 50 && !c.looksLikeOutput && !c.looksLikeStatus);
+      const outputCols = cols.filter(c => c.looksLikeOutput);
+      const statusCols = cols.filter(c => c.looksLikeStatus);
+
+      if (inputCols.length > 0) {
+        const names = inputCols.map(c => '<code>' + c.name + '</code>').join(', ');
+        welcome += '<br><br>I see data in: ' + names + '.';
+      }
+
+      if (outputCols.length > 0) {
+        welcome += ' Column <code>' + outputCols[0].name + '</code> looks like it\'s for output.';
+      }
+
+      if (ctx.emptyOutputRows && ctx.emptyOutputRows.count > 0) {
+        welcome += '<br><br><strong>' + ctx.emptyOutputRows.count + ' rows</strong> need processing. What would you like me to do with them?';
+      } else {
+        welcome += '<br><br>What would you like me to do with this data?';
+      }
+
+      addMessage('agent', welcome);
+    }
+
+    function sendMessage() {
+      const input = document.getElementById('input');
+      const text = input.value.trim();
+      if (!text || isProcessing) return;
+
+      addMessage('user', text);
+      input.value = '';
+      autoResize(input);
+      setProcessing(true);
+
+      // Add to conversation history
+      conversationHistory.push({ role: 'user', content: text });
+
+      google.script.run
+        .withSuccessHandler(function(response) {
+          setProcessing(false);
+          handleAgentResponse(response);
+        })
+        .withFailureHandler(function(err) {
+          setProcessing(false);
+          addMessage('error', 'Error: ' + err.message);
+        })
+        .sendMessage(text, sheetContext);
+    }
+
+    function handleAgentResponse(response) {
+      if (!response) {
+        addMessage('error', 'No response from agent.');
+        return;
+      }
+
+      if (response.error) {
+        addMessage('error', response.error);
+        return;
+      }
+
+      // Chat response
+      if (response.message) {
+        addMessage('agent', response.message);
+        conversationHistory.push({ role: 'assistant', content: response.message });
+      }
+
+      // Agent wants to run a job
+      if (response.jobId) {
+        currentJobId = response.jobId;
+        startProgressTracking(response);
+      }
+
+      // Agent suggests saving itself
+      if (response.suggestSave && response.agentConfig) {
+        addMessage('agent', 
+          'Would you like to save this as a reusable agent? ' +
+          '<strong>' + (response.agentConfig.name || 'Untitled Agent') + '</strong> — ' +
+          'you can run it on any sheet with a similar structure.'
+        );
+      }
+    }
+
+    // ========================================================
+    // PROGRESS TRACKING
+    // ========================================================
+
+    function startProgressTracking(job) {
+      const bar = document.getElementById('progressBar');
+      bar.classList.add('active');
+      
+      document.getElementById('progressLabel').textContent = job.label || 'Processing rows...';
+      document.getElementById('progressCount').textContent = '0 / ' + (job.totalRows || '?');
+      document.getElementById('progressFill').style.width = '0%';
+      document.getElementById('progressCurrent').innerHTML = '<div class="spinner"></div><span>Starting...</span>';
+
+      // Poll for status every 2 seconds
+      pollInterval = setInterval(function() {
+        google.script.run
+          .withSuccessHandler(function(status) {
+            updateProgress(status);
+          })
+          .withFailureHandler(function(err) {
+            console.error('Poll error:', err);
+          })
+          .getJobStatus(currentJobId);
+      }, 2000);
+    }
+
+    function updateProgress(status) {
+      if (!status) return;
+
+      const total = status.totalRows || 1;
+      const completed = status.completedRows || 0;
+      const pct = Math.round((completed / total) * 100);
+
+      document.getElementById('progressCount').textContent = completed + ' / ' + total;
+      document.getElementById('progressFill').style.width = pct + '%';
+
+      if (status.currentRow) {
+        document.getElementById('progressCurrent').innerHTML = 
+          '<div class="spinner"></div><span>Row ' + status.currentRow + ': ' + 
+          (status.currentCompany || 'Processing...') + '</span>';
+      }
+
+      // Job complete
+      if (status.status === 'complete' || status.status === 'stopped') {
+        clearInterval(pollInterval);
+        pollInterval = null;
+        currentJobId = null;
+
+        document.getElementById('progressFill').style.width = '100%';
+        document.getElementById('progressCurrent').innerHTML = 
+          '<span style="color: var(--accent);">✓ ' + 
+          (status.status === 'stopped' ? 'Stopped' : 'Complete') + 
+          ' — ' + completed + ' rows processed</span>';
+
+        setTimeout(function() {
+          document.getElementById('progressBar').classList.remove('active');
+        }, 3000);
+
+        if (status.status === 'complete') {
+          addMessage('agent', 
+            '✓ Done! Processed <strong>' + completed + ' rows</strong>. ' +
+            (status.errors > 0 ? status.errors + ' rows had errors. ' : '') +
+            'Results are written to your sheet.'
+          );
+        }
+
+        // Refresh sheet context
+        refreshContext();
+      }
+
+      // Job errored
+      if (status.status === 'error') {
+        clearInterval(pollInterval);
+        pollInterval = null;
+        currentJobId = null;
+
+        document.getElementById('progressBar').classList.remove('active');
+        addMessage('error', 'Agent stopped with error: ' + (status.error || 'Unknown error'));
+      }
+    }
+
+    function stopAgent() {
+      if (currentJobId) {
+        google.script.run
+          .withSuccessHandler(function() {
+            addMessage('system', 'Stopping agent...');
+          })
+          .stopRunningAgent(currentJobId);
+      }
+    }
+
+    // ========================================================
+    // AGENTS LIST
+    // ========================================================
+
+    function loadAgents() {
+      google.script.run
+        .withSuccessHandler(function(response) {
+          renderAgentsList(response);
+        })
+        .withFailureHandler(function() {
+          // Silent fail - agents panel just stays empty
+        })
+        .listAgents();
+    }
+
+    function renderAgentsList(response) {
+      const list = document.getElementById('agentsList');
+      
+      if (!response || !response.agents || response.agents.length === 0) {
+        return; // Keep the empty state
+      }
+
+      list.innerHTML = response.agents.map(function(agent) {
+        return '<div class="agent-card" onclick="runSavedAgent(\'' + agent.id + '\')">' +
+          '<div class="agent-card-name">' + escapeHtml(agent.name) + '</div>' +
+          '<div class="agent-card-desc">' + escapeHtml(agent.description || 'No description') + '</div>' +
+          '<div class="agent-card-meta">' +
+            '<span>📊 ' + (agent.runs || 0) + ' runs</span>' +
+            '<span>🕐 ' + formatDate(agent.lastRun) + '</span>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+    }
+
+    function runSavedAgent(agentId) {
+      switchTab('chat');
+      addMessage('system', 'Loading agent...');
+      // TODO: Implement agent loading and running
+    }
+
+    // ========================================================
+    // CONTEXT PANEL
+    // ========================================================
+
+    function renderContextPanel(ctx) {
+      const panel = document.getElementById('contextContent');
+      
+      if (ctx.isEmpty) {
+        panel.innerHTML = '<div class="context-section">' +
+          '<div class="context-section-title">Sheet is empty</div>' +
+          '<div style="color: var(--text-muted); font-size: 12px;">Add headers and data to get started.</div>' +
+        '</div>';
+        return;
+      }
+
+      let html = '';
+
+      // Sheet info
+      html += '<div class="context-section">' +
+        '<div class="context-section-title">Sheet Info</div>' +
+        '<div class="context-item"><span class="label">Sheet</span><span class="value">' + ctx.sheetName + '</span></div>' +
+        '<div class="context-item"><span class="label">Rows</span><span class="value">' + ctx.rowCount + '</span></div>' +
+        '<div class="context-item"><span class="label">Columns</span><span class="value">' + ctx.columnCount + '</span></div>' +
+      '</div>';
+
+      // Column analysis
+      html += '<div class="context-section">' +
+        '<div class="context-section-title">Columns Detected</div>';
+      
+      (ctx.columns || []).forEach(function(col) {
+        let tags = '';
+        if (col.looksLikeOutput) tags += '<span class="col-tag output">output</span>';
+        else if (col.looksLikeStatus) tags += '<span class="col-tag status">status</span>';
+        else if (col.fillRate > 50) tags += '<span class="col-tag input">input</span>';
+
+        html += '<div class="context-item">' +
+          '<span class="label">' + col.letter + ' — ' + escapeHtml(col.name) + ' ' + tags + '</span>' +
+          '<span class="value">' + col.fillRate + '% filled</span>' +
+        '</div>';
+      });
+
+      html += '</div>';
+
+      // Processing summary
+      if (ctx.emptyOutputRows && ctx.emptyOutputRows.count > 0) {
+        html += '<div class="context-section">' +
+          '<div class="context-section-title">Ready to Process</div>' +
+          '<div class="context-item"><span class="label">Rows needing output</span><span class="value" style="color: var(--accent);">' + ctx.emptyOutputRows.count + '</span></div>' +
+          '<div class="context-item"><span class="label">Output column</span><span class="value">' + ctx.emptyOutputRows.outputColumn + '</span></div>' +
+        '</div>';
+      }
+
+      panel.innerHTML = html;
+    }
+
+    // ========================================================
+    // UI HELPERS
+    // ========================================================
+
+    function addMessage(type, html) {
+      const container = document.getElementById('messages');
+      const msg = document.createElement('div');
+      msg.className = 'msg ' + type;
+      msg.innerHTML = html;
+      container.appendChild(msg);
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function setProcessing(state) {
+      isProcessing = state;
+      document.getElementById('sendBtn').disabled = state;
+      if (state) {
+        addMessage('system', '<div class="spinner" style="display:inline-block;width:12px;height:12px;vertical-align:middle;margin-right:4px;"></div> Thinking...');
+      }
+    }
+
+    function switchTab(panel) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      document.querySelector('.tab[data-panel="' + panel + '"]').classList.add('active');
+      document.getElementById('panel-' + panel).classList.add('active');
+    }
+
+    function handleKeydown(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    }
+
+    function autoResize(el) {
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function formatDate(dateStr) {
+      if (!dateStr) return 'Never';
+      const d = new Date(dateStr);
+      const now = new Date();
+      const diff = now - d;
+      if (diff < 3600000) return Math.round(diff / 60000) + 'm ago';
+      if (diff < 86400000) return Math.round(diff / 3600000) + 'h ago';
+      return Math.round(diff / 86400000) + 'd ago';
+    }
+
+    // ========================================================
+    // BOOT
+    // ========================================================
+    init();
+  </script>
+</body>
+</html>

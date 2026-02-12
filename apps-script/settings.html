@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 24px; background: #f8f9fa; color: #333; font-size: 14px; }
+    h2 { font-size: 18px; margin-bottom: 4px; }
+    .subtitle { color: #666; font-size: 13px; margin-bottom: 20px; }
+    label { display: block; font-weight: 500; font-size: 13px; margin-bottom: 4px; color: #444; }
+    input { width: 100%; padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; margin-bottom: 16px; outline: none; font-family: 'SF Mono', monospace; }
+    input:focus { border-color: #34d399; }
+    .help { font-size: 11px; color: #888; margin-top: -12px; margin-bottom: 16px; }
+    .btn-row { display: flex; gap: 8px; margin-top: 8px; }
+    button { padding: 8px 20px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; font-weight: 500; }
+    .btn-primary { background: #34d399; color: #000; }
+    .btn-secondary { background: #e5e7eb; color: #333; }
+    .btn-test { background: #eff6ff; color: #3b82f6; border: 1px solid #bfdbfe; }
+    .status { margin-top: 12px; font-size: 12px; padding: 8px 12px; border-radius: 6px; display: none; }
+    .status.success { display: block; background: #d1fae5; color: #065f46; }
+    .status.error { display: block; background: #fee2e2; color: #991b1b; }
+  </style>
+</head>
+<body>
+  <h2>⚡ Agent Builder Settings</h2>
+  <p class="subtitle">Configure your backend connection.</p>
+
+  <label>Backend URL</label>
+  <input type="text" id="backendUrl" placeholder="https://your-project.supabase.co/functions/v1" />
+  <div class="help">Your Supabase Edge Functions base URL</div>
+
+  <label>API Key</label>
+  <input type="password" id="apiKey" placeholder="Enter your API key" />
+  <div class="help">Used to authenticate requests to your backend</div>
+
+  <div class="btn-row">
+    <button class="btn-primary" onclick="save()">Save</button>
+    <button class="btn-test" onclick="test()">Test Connection</button>
+    <button class="btn-secondary" onclick="google.script.host.close()">Cancel</button>
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <script>
+    google.script.run.withSuccessHandler(function(settings) {
+      if (settings.backendUrl) document.getElementById('backendUrl').value = settings.backendUrl;
+      if (settings.apiKey) document.getElementById('apiKey').value = settings.apiKey;
+    }).getSettings();
+
+    function save() {
+      const settings = {
+        backendUrl: document.getElementById('backendUrl').value.trim(),
+        apiKey: document.getElementById('apiKey').value.trim(),
+      };
+      google.script.run.withSuccessHandler(function() {
+        showStatus('success', 'Settings saved!');
+        setTimeout(function() { google.script.host.close(); }, 1000);
+      }).withFailureHandler(function(err) {
+        showStatus('error', 'Save failed: ' + err.message);
+      }).saveSettings(settings);
+    }
+
+    function test() {
+      showStatus('', 'Testing connection...');
+      google.script.run.withSuccessHandler(function(result) {
+        if (result.success) showStatus('success', result.message);
+        else showStatus('error', result.message);
+      }).withFailureHandler(function(err) {
+        showStatus('error', 'Test failed: ' + err.message);
+      }).testConnection();
+    }
+
+    function showStatus(type, msg) {
+      const el = document.getElementById('status');
+      el.className = 'status ' + type;
+      el.textContent = msg;
+      el.style.display = 'block';
+    }
+  </script>
+</body>
+</html>
