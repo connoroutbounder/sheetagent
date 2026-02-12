@@ -401,6 +401,44 @@ function saveSettings(settings) {
 }
 
 /**
+ * Tests the Apollo.io API connection using the user's saved key.
+ * Makes a lightweight search call to verify the key works.
+ */
+function testApolloConnection() {
+  var key = PropertiesService.getUserProperties().getProperty('apollo_api_key');
+  if (!key) {
+    return { success: false, message: 'No Apollo API key saved. Enter your key and click Save first.' };
+  }
+  
+  try {
+    var response = UrlFetchApp.fetch('https://api.apollo.io/api/v1/mixed_people/api_search', {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'X-Api-Key': key },
+      payload: JSON.stringify({
+        api_key: key,
+        q_organization_domains: 'apollo.io',
+        per_page: 1,
+      }),
+      muteHttpExceptions: true,
+    });
+    
+    var code = response.getResponseCode();
+    if (code === 200) {
+      var data = JSON.parse(response.getContentText());
+      var count = (data.people || []).length;
+      return { success: true, message: '✅ Apollo.io connected! Found ' + count + ' test result(s).' };
+    } else if (code === 401 || code === 403) {
+      return { success: false, message: 'Invalid API key (HTTP ' + code + '). Check your key at Apollo Settings.' };
+    } else {
+      return { success: false, message: 'Apollo returned HTTP ' + code + ': ' + response.getContentText().substring(0, 200) };
+    }
+  } catch(e) {
+    return { success: false, message: 'Connection failed: ' + e.toString() };
+  }
+}
+
+/**
  * One-time setup: configure Supabase connection properties.
  * Run this function manually after deploying.
  */

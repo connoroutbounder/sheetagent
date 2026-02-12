@@ -43,7 +43,8 @@
 
   <div class="btn-row">
     <button class="btn-primary" onclick="save()">Save</button>
-    <button class="btn-test" onclick="test()">Test Connection</button>
+    <button class="btn-test" onclick="testBackend()">Test Backend</button>
+    <button class="btn-test" onclick="testApollo()" style="color: #8b5cf6; border-color: #c4b5fd;">Test Apollo</button>
     <button class="btn-secondary" onclick="google.script.host.close()">Cancel</button>
   </div>
 
@@ -64,20 +65,30 @@
       };
       google.script.run.withSuccessHandler(function() {
         showStatus('success', 'Settings saved!');
-        setTimeout(function() { google.script.host.close(); }, 1000);
+        setTimeout(function() { google.script.host.close(); }, 1500);
       }).withFailureHandler(function(err) {
         showStatus('error', 'Save failed: ' + err.message);
       }).saveSettings(settings);
     }
 
-    function test() {
-      showStatus('', 'Testing connection...');
+    function testBackend() {
+      showStatus('', 'Testing backend connection...');
       google.script.run.withSuccessHandler(function(result) {
-        if (result.success) showStatus('success', result.message);
-        else showStatus('error', result.message);
+        if (result.success) showStatus('success', '🔵 ' + result.message);
+        else showStatus('error', '🔵 ' + result.message);
       }).withFailureHandler(function(err) {
-        showStatus('error', 'Test failed: ' + err.message);
+        showStatus('error', 'Backend test failed: ' + err.message);
       }).testConnection();
+    }
+
+    function testApollo() {
+      showStatus('', 'Testing Apollo.io connection...');
+      google.script.run.withSuccessHandler(function(result) {
+        if (result.success) showStatus('success', '🟣 ' + result.message);
+        else showStatus('error', '🟣 ' + result.message);
+      }).withFailureHandler(function(err) {
+        showStatus('error', 'Apollo test failed: ' + err.message);
+      }).testApolloConnection();
     }
 
     function showStatus(type, msg) {

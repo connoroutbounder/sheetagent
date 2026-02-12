@@ -38,23 +38,43 @@ interface ToolResult {
 
 const PERPLEXITY_API_KEY = Deno.env.get('PERPLEXITY_API_KEY') || '';
 const FIRECRAWL_API_KEY = Deno.env.get('FIRECRAWL_API_KEY') || '';
-const APOLLO_API_KEY = Deno.env.get('APOLLO_API_KEY') || '';
 const PERPLEXITY_MODEL = 'sonar';  // Fast, search-optimized model
 const APOLLO_BASE_URL = 'https://api.apollo.io';
+
+// Apollo API key: user-provided (per-request) takes priority over env var
+let _apolloApiKey = Deno.env.get('APOLLO_API_KEY') || '';
+
+/**
+ * Sets the Apollo API key for the current request.
+ * Called from agent-run with the user-provided key from the X-Apollo-Api-Key header.
+ * Falls back to the Supabase secret if not provided.
+ */
+export function setApolloApiKey(key: string) {
+  if (key) _apolloApiKey = key;
+}
+
+function getApolloApiKey(): string {
+  return _apolloApiKey;
+}
 
 /**
  * Helper: makes an authenticated Apollo.io API request.
  * Uses both header and body auth for maximum compatibility.
  */
 async function apolloRequest(endpoint: string, body: Record<string, any>): Promise<any> {
-  body.api_key = APOLLO_API_KEY;
+  const apiKey = getApolloApiKey();
+  if (!apiKey) {
+    throw new Error('Apollo.io API key not configured. Add it in Settings or set APOLLO_API_KEY secret.');
+  }
+  
+  body.api_key = apiKey;
   
   const response = await fetch(`${APOLLO_BASE_URL}${endpoint}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Cache-Control': 'no-cache',
-      'X-Api-Key': APOLLO_API_KEY,
+      'X-Api-Key': apiKey,
     },
     body: JSON.stringify(body),
   });
@@ -406,8 +426,8 @@ async function apolloEnrichPerson(input: {
   domain?: string;
   linkedin_url?: string;
 }): Promise<string> {
-  if (!APOLLO_API_KEY) {
-    return 'Apollo.io unavailable: APOLLO_API_KEY not configured. Ask the user to add their Apollo API key in Settings.';
+  if (!getApolloApiKey()) {
+    return 'Apollo.io unavailable: No API key configured. Add your Apollo API key in the sidebar Settings.';
   }
 
   let firstName = input.first_name || '';
@@ -444,8 +464,8 @@ async function apolloEnrichCompany(input: {
   domain?: string;
   name?: string;
 }): Promise<string> {
-  if (!APOLLO_API_KEY) {
-    return 'Apollo.io unavailable: APOLLO_API_KEY not configured. Ask the user to add their Apollo API key in Settings.';
+  if (!getApolloApiKey()) {
+    return 'Apollo.io unavailable: No API key configured. Add your Apollo API key in the sidebar Settings.';
   }
 
   const body: Record<string, any> = {};
@@ -506,8 +526,8 @@ async function apolloSearchPeople(input: {
   page?: number;
   q_keywords?: string;
 }): Promise<string> {
-  if (!APOLLO_API_KEY) {
-    return 'Apollo.io unavailable: APOLLO_API_KEY not configured. Ask the user to add their Apollo API key in Settings.';
+  if (!getApolloApiKey()) {
+    return 'Apollo.io unavailable: No API key configured. Add your Apollo API key in the sidebar Settings.';
   }
 
   const perPage = Math.min(input.per_page || 3, 25);
@@ -581,8 +601,8 @@ async function apolloFindEmail(input: {
   domain?: string;
   linkedin_url?: string;
 }): Promise<string> {
-  if (!APOLLO_API_KEY) {
-    return 'Apollo.io unavailable: APOLLO_API_KEY not configured. Ask the user to add their Apollo API key in Settings.';
+  if (!getApolloApiKey()) {
+    return 'Apollo.io unavailable: No API key configured. Add your Apollo API key in the sidebar Settings.';
   }
 
   let firstName = input.first_name || '';

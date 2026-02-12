@@ -40,15 +40,24 @@ const ApiClient = {
     const url = baseUrl + endpoint;
     const token = this._getAuthToken();
     
+    const headers = {
+      'Authorization': 'Bearer ' + token,
+      'apikey': token,
+      'X-Spreadsheet-Id': SpreadsheetApp.getActiveSpreadsheet().getId(),
+      'X-User-Email': Session.getActiveUser().getEmail(),
+    };
+    
+    // Pass user-configured external API keys to the backend
+    const userProps = PropertiesService.getUserProperties();
+    const apolloKey = userProps.getProperty('apollo_api_key');
+    if (apolloKey) {
+      headers['X-Apollo-Api-Key'] = apolloKey;
+    }
+    
     const options = {
       method: method,
       contentType: 'application/json',
-      headers: {
-        'Authorization': 'Bearer ' + token,
-        'apikey': token,
-        'X-Spreadsheet-Id': SpreadsheetApp.getActiveSpreadsheet().getId(),
-        'X-User-Email': Session.getActiveUser().getEmail(),
-      },
+      headers: headers,
       muteHttpExceptions: true,
     };
     

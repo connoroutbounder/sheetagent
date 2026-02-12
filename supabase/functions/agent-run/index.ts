@@ -15,7 +15,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { buildChatPrompt, buildRowPrompt, buildToolDefinitions, parseAgentConfig } from '../lib/prompt-builder.ts';
-import { executeToolCalls } from '../lib/tools.ts';
+import { executeToolCalls, setApolloApiKey } from '../lib/tools.ts';
 import { SheetsClient } from '../lib/sheets-api.ts';
 import type { ChatRequest, StartRunRequest, StopRunRequest, ChatResponse, AgentConfig, SheetContext, RowData } from '../lib/types.ts';
 
@@ -40,7 +40,7 @@ Deno.serve(async (req) => {
       headers: {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Spreadsheet-Id, X-User-Email, apikey',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Spreadsheet-Id, X-User-Email, X-Apollo-Api-Key, apikey',
       },
     });
   }
@@ -48,6 +48,10 @@ Deno.serve(async (req) => {
   try {
     const body = await req.json();
     const userEmail = req.headers.get('X-User-Email') || body.userEmail;
+
+    // Set user-provided external API keys (from sidebar Settings)
+    const apolloKey = req.headers.get('X-Apollo-Api-Key');
+    if (apolloKey) setApolloApiKey(apolloKey);
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
     const user = await ensureUser(supabase, userEmail);
