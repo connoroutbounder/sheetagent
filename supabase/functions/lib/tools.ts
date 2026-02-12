@@ -42,6 +42,31 @@ const APOLLO_API_KEY = Deno.env.get('APOLLO_API_KEY') || '';
 const PERPLEXITY_MODEL = 'sonar';  // Fast, search-optimized model
 const APOLLO_BASE_URL = 'https://api.apollo.io';
 
+/**
+ * Helper: makes an authenticated Apollo.io API request.
+ * Uses both header and body auth for maximum compatibility.
+ */
+async function apolloRequest(endpoint: string, body: Record<string, any>): Promise<any> {
+  body.api_key = APOLLO_API_KEY;
+  
+  const response = await fetch(`${APOLLO_BASE_URL}${endpoint}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-cache',
+      'X-Api-Key': APOLLO_API_KEY,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Apollo API error (${response.status}): ${errText}`);
+  }
+
+  return response.json();
+}
+
 // =============================================================
 // TOOL EXECUTOR
 // =============================================================
@@ -342,7 +367,7 @@ async function apolloEnrichPerson(input: {
     lastName = parts.slice(1).join(' ') || '';
   }
 
-  const body: Record<string, any> = { api_key: APOLLO_API_KEY };
+  const body: Record<string, any> = {};
   if (firstName) body.first_name = firstName;
   if (lastName) body.last_name = lastName;
   if (input.email) body.email = input.email;
@@ -351,18 +376,7 @@ async function apolloEnrichPerson(input: {
   if (input.linkedin_url) body.linkedin_url = input.linkedin_url;
 
   try {
-    const response = await fetch(`${APOLLO_BASE_URL}/v1/people/match`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      return `Apollo API error (${response.status}): ${errText}`;
-    }
-
-    const data = await response.json();
+    const data = await apolloRequest('/v1/people/match', body);
     const person = data.person;
 
     if (!person) {
@@ -413,23 +427,12 @@ async function apolloEnrichCompany(input: {
     return 'Apollo.io unavailable: APOLLO_API_KEY not configured. Ask the user to add their Apollo API key in Settings.';
   }
 
-  const body: Record<string, any> = { api_key: APOLLO_API_KEY };
+  const body: Record<string, any> = {};
   if (input.domain) body.domain = input.domain;
   if (input.name && !input.domain) body.domain = input.name; // Apollo prefers domain; try name as domain
 
   try {
-    const response = await fetch(`${APOLLO_BASE_URL}/v1/organizations/enrich`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      return `Apollo API error (${response.status}): ${errText}`;
-    }
-
-    const data = await response.json();
+    const data = await apolloRequest('/v1/organizations/enrich', body);
     const org = data.organization;
 
     if (!org) {
@@ -482,7 +485,6 @@ async function apolloSearchPeople(input: {
   }
 
   const body: Record<string, any> = {
-    api_key: APOLLO_API_KEY,
     page: input.page || 1,
     per_page: Math.min(input.per_page || 10, 25), // Cap at 25
   };
@@ -496,18 +498,7 @@ async function apolloSearchPeople(input: {
   if (input.q_keywords) body.q_keywords = input.q_keywords;
 
   try {
-    const response = await fetch(`${APOLLO_BASE_URL}/api/v1/mixed_people/search`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      return `Apollo API error (${response.status}): ${errText}`;
-    }
-
-    const data = await response.json();
+    const data = await apolloRequest('/api/v1/mixed_people/search', body);
     const people = data.people || [];
     const totalCount = data.pagination?.total_entries || people.length;
 
@@ -560,7 +551,6 @@ async function apolloFindEmail(input: {
   }
 
   const body: Record<string, any> = {
-    api_key: APOLLO_API_KEY,
     reveal_personal_emails: false,
     reveal_phone_number: false,
   };
@@ -571,18 +561,7 @@ async function apolloFindEmail(input: {
   if (input.linkedin_url) body.linkedin_url = input.linkedin_url;
 
   try {
-    const response = await fetch(`${APOLLO_BASE_URL}/v1/people/match`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      return `Apollo API error (${response.status}): ${errText}`;
-    }
-
-    const data = await response.json();
+    const data = await apolloRequest('/v1/people/match', body);
     const person = data.person;
 
     if (!person) {
