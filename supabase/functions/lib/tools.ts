@@ -18,6 +18,10 @@
  *    Email verification and validation service. Checks deliverability,
  *    detects disposable/catch-all emails, and guesses email formats.
  * 
+ * 🔴 GetSales tools (push/pull leads, lists, automations) — powered by GetSales.io API
+ *    LinkedIn-native sales engagement platform. Push/pull leads, manage lists,
+ *    trigger automations, and sync lead data.
+ * 
  * 🔵 Analysis tools (extract) — handled by Claude (the orchestrator)
  */
 
@@ -45,10 +49,12 @@ const FIRECRAWL_API_KEY = Deno.env.get('FIRECRAWL_API_KEY') || '';
 const PERPLEXITY_MODEL = 'sonar';  // Fast, search-optimized model
 const APOLLO_BASE_URL = 'https://api.apollo.io';
 const ZEROBOUNCE_BASE_URL = 'https://api.zerobounce.net/v2';
+const GETSALES_BASE_URL = 'https://amazing.getsales.io';
 
 // External API keys: user-provided (per-request) takes priority over env var
 let _apolloApiKey = Deno.env.get('APOLLO_API_KEY') || '';
 let _zerobounceApiKey = Deno.env.get('ZEROBOUNCE_API_KEY') || '';
+let _getsalesApiKey = Deno.env.get('GETSALES_API_KEY') || '';
 
 // =============================================================
 // CACHED LIST ENTRIES
@@ -97,6 +103,17 @@ export function setZerobounceApiKey(key: string) {
 
 function getZerobounceApiKey(): string {
   return _zerobounceApiKey;
+}
+
+/**
+ * Sets the GetSales API key for the current request.
+ */
+export function setGetsalesApiKey(key: string) {
+  if (key) _getsalesApiKey = key;
+}
+
+function getGetsalesApiKey(): string {
+  return _getsalesApiKey;
 }
 
 /**
@@ -224,6 +241,20 @@ export async function executeTool(toolCall: ToolCall): Promise<string> {
         return await zerobounceGuessFormat(input.domain, input.first_name, input.last_name);
       case 'zerobounce_credits':
         return await zerobounceGetCredits();
+
+      // 🔴 GetSales tools
+      case 'getsales_get_lists':
+        return await getsalesGetLists(input);
+      case 'getsales_create_list':
+        return await getsalesCreateList(input);
+      case 'getsales_push_leads':
+        return await getsalesPushLeads(input);
+      case 'getsales_pull_leads':
+        return await getsalesPullLeads(input);
+      case 'getsales_get_automations':
+        return await getsalesGetAutomations(input);
+      case 'getsales_add_to_automation':
+        return await getsalesAddToAutomation(input);
 
       // 🔵 Analysis tools
       case 'extract_data':
@@ -1511,6 +1542,454 @@ async function zerobounceGetCredits(): Promise<string> {
     return `ZeroBounce credits remaining: ${data.Credits}`;
   } catch (e) {
     return `ZeroBounce credits check error: ${e.message}`;
+  }
+}
+
+// =============================================================
+// 🔴 GETSALES.io TOOLS
+// =============================================================
+
+/**
+ * Helper: makes an authenticated GetSales.io API request.
+ */
+async function getsalesRequest(
+  endpoint: string,
+  method: 'GET' | 'POST' | 'DELETE' = 'GET',
+  body?: Record<string, any>
+): Promise<any> {
+  const apiKey = getGetsalesApiKey();
+  if (!apiKey) {
+    throw new Error('GetSales API key not configured. Add it in Settings or set GETSALES_API_KEY secret.');
+  }
+
+  const options: RequestInit = {
+    method,
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'Cache-Control': 'no-cache',
+    },
+  };
+
+  if (body && (method === 'POST')) {
+    options.body = JSON.stringify(body);
+  }
+
+  const response = await fetch(`${GETSALES_BASE_URL}${endpoint}`, options);
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`GetSales API error (${response.status}): ${errText.substring(0, 200)}`);
+  }
+
+  return await response.json();
+}
+
+/**
+ * Gets all contact lists from GetSales.io. Supports optional search filtering.
+ */
+async function getsalesGetLists(input: {
+  search?: string;
+}): Promise<string> {
+  if (!getGetsalesApiKey()) {
+    return 'GetSales unavailable: No API key configured. Add your GetSales API key in the sidebar Settings.';
+  }
+
+  try {
+    const allLists: Array<{ uuid: string; name: string; team_id: number }> = [];
+    let offset = 0;
+    const limit = 50;
+
+    while (true) {
+      const query = new URLSearchParams({
+        limit: limit.toString(),
+        offset: offset.toString(),
+        order_field: 'created_at',
+        order_type: 'desc',
+      }).toString();
+
+      const data = await getsalesRequest(`/leads/api/lists?${query}`);
+      allLists.push(...data.data);
+
+      if (!data.has_more) break;
+      offset += limit;
+    }
+
+    // Filter by search if provided
+    let filtered = allLists;
+    if (input.search) {
+      const searchLower = input.search.toLowerCase();
+      filtered = allLists.filter(l => l.name.toLowerCase().includes(searchLower));
+    }
+
+    if (filtered.length === 0) {
+      return input.search
+        ? `No GetSales lists found matching "${input.search}". Total lists: ${allLists.length}.`
+        : 'No lists found in GetSales.';
+    }
+
+    let result = `Found ${filtered.length} GetSales lists${input.search ? ` matching "${input.search}"` : ''}:\n\n`;
+    for (const list of filtered) {
+      result += `• "${list.name}" (uuid: ${list.uuid})\n`;
+    }
+    return truncateResult(result, 3000);
+  } catch (e) {
+    return `GetSales get lists error: ${e.message}`;
+  }
+}
+
+/**
+ * Creates a new contact list in GetSales.io.
+ */
+async function getsalesCreateList(input: {
+  name: string;
+}): Promise<string> {
+  if (!getGetsalesApiKey()) {
+    return 'GetSales unavailable: No API key configured.';
+  }
+
+  try {
+    const data = await getsalesRequest('/leads/api/lists', 'POST', {
+      name: input.name,
+    });
+
+    return `✅ Created GetSales list "${data.name}" (uuid: ${data.uuid})`;
+  } catch (e) {
+    return `GetSales create list error: ${e.message}`;
+  }
+}
+
+/**
+ * Pushes (upserts) leads into a GetSales list.
+ * Each lead can include: linkedin_id, first_name, last_name, company_name,
+ * email, headline, position, raw_address, domain, custom_fields.
+ */
+async function getsalesPushLeads(input: {
+  list_uuid: string;
+  list_name?: string;
+  move_to_list?: boolean;
+  leads: Array<{
+    linkedin_id?: string;
+    first_name?: string;
+    last_name?: string;
+    company_name?: string;
+    email?: string;
+    headline?: string;
+    position?: string;
+    raw_address?: string;
+    domain?: string;
+    linkedin?: string;
+    custom_fields?: Record<string, any>;
+  }>;
+}): Promise<string> {
+  if (!getGetsalesApiKey()) {
+    return 'GetSales unavailable: No API key configured.';
+  }
+
+  try {
+    // If list_name provided but no list_uuid, find or create the list
+    let listUuid = input.list_uuid;
+    if (!listUuid && input.list_name) {
+      const listsResult = await getsalesGetLists({ search: input.list_name });
+      const uuidMatch = listsResult.match(/uuid: ([a-f0-9-]+)/);
+      if (uuidMatch) {
+        listUuid = uuidMatch[1];
+      } else {
+        // Create a new list
+        const newList = await getsalesRequest('/leads/api/lists', 'POST', {
+          name: input.list_name,
+        });
+        listUuid = newList.uuid;
+      }
+    }
+
+    if (!listUuid) {
+      return 'Error: must provide list_uuid or list_name.';
+    }
+
+    const results: string[] = [];
+    let successCount = 0;
+    let errorCount = 0;
+
+    // Upsert leads one at a time (GetSales API pattern)
+    for (const lead of input.leads) {
+      try {
+        // Clean linkedin_id from full URL
+        let linkedinId = lead.linkedin_id || '';
+        if (linkedinId.includes('linkedin.com/in/')) {
+          linkedinId = linkedinId
+            .replace('https://www.linkedin.com/in/', '')
+            .replace('http://www.linkedin.com/in/', '')
+            .replace('https://linkedin.com/in/', '')
+            .split('/')[0];
+        }
+
+        const customFields = lead.custom_fields;
+        const body: Record<string, any> = {
+          lead: {
+            linkedin_id: linkedinId,
+            first_name: lead.first_name || '',
+            last_name: lead.last_name || '',
+            company_name: lead.company_name || '',
+            email: lead.email || '',
+            headline: lead.headline || '',
+            position: lead.position || '',
+            raw_address: lead.raw_address || '',
+            linkedin: lead.linkedin || '',
+          },
+          list_uuid: listUuid,
+          update_if_exists: true,
+          move_to_list: input.move_to_list ?? false,
+        };
+
+        if (customFields) {
+          body.custom_fields = customFields;
+        }
+
+        await getsalesRequest('/leads/api/leads/upsert', 'POST', body);
+        successCount++;
+      } catch (e) {
+        errorCount++;
+        results.push(`  ✗ ${lead.first_name} ${lead.last_name}: ${e.message}`);
+      }
+    }
+
+    let summary = `✅ Pushed ${successCount} leads to GetSales list (uuid: ${listUuid})`;
+    if (errorCount > 0) {
+      summary += `\n⚠️ ${errorCount} errors:\n` + results.join('\n');
+    }
+    return summary;
+  } catch (e) {
+    return `GetSales push leads error: ${e.message}`;
+  }
+}
+
+/**
+ * Pulls all leads from a GetSales list. Auto-paginates and caches for bulk_write.
+ */
+async function getsalesPullLeads(input: {
+  list_uuid?: string;
+  list_name?: string;
+}): Promise<string> {
+  if (!getGetsalesApiKey()) {
+    return 'GetSales unavailable: No API key configured. Add your GetSales API key in the sidebar Settings.';
+  }
+
+  try {
+    // Resolve list UUID
+    let listUuid = input.list_uuid || '';
+    let listName = input.list_name || '';
+
+    if (!listUuid && listName) {
+      // Find the list by name
+      const allLists: Array<{ uuid: string; name: string }> = [];
+      let offset = 0;
+      while (true) {
+        const query = new URLSearchParams({
+          limit: '50',
+          offset: offset.toString(),
+          order_field: 'created_at',
+          order_type: 'desc',
+        }).toString();
+        const data = await getsalesRequest(`/leads/api/lists?${query}`);
+        allLists.push(...data.data);
+        if (!data.has_more) break;
+        offset += 50;
+      }
+
+      const match = allLists.find(l =>
+        l.name.toLowerCase() === listName.toLowerCase()
+      );
+      if (!match) {
+        // Try partial match
+        const partial = allLists.find(l =>
+          l.name.toLowerCase().includes(listName.toLowerCase())
+        );
+        if (partial) {
+          listUuid = partial.uuid;
+          listName = partial.name;
+        } else {
+          return `List "${listName}" not found in GetSales. Use getsales_get_lists to see available lists.`;
+        }
+      } else {
+        listUuid = match.uuid;
+        listName = match.name;
+      }
+    }
+
+    if (!listUuid) {
+      return 'Error: must provide list_uuid or list_name.';
+    }
+
+    // Fetch all leads with auto-pagination
+    const MAX_ENTRIES = 10000;
+    const TIME_LIMIT_MS = 120_000;
+    const startTime = Date.now();
+    const allEntries: Array<Record<string, string>> = [];
+    let offset = 0;
+    const limit = 50;
+
+    while (allEntries.length < MAX_ENTRIES) {
+      if (Date.now() - startTime > TIME_LIMIT_MS) break;
+
+      const data = await getsalesRequest('/leads/c2/api/leads/list', 'POST', {
+        limit,
+        offset,
+        filter: {
+          elasticQuery: {
+            bool: {
+              must: [{
+                bool: {
+                  must: [{
+                    bool: {
+                      should: [{
+                        term: { list_uuid: listUuid },
+                      }],
+                    },
+                  }],
+                },
+              }],
+            },
+          },
+          leadFilter: {},
+        },
+      });
+
+      const leads = data.data || [];
+      if (leads.length === 0) break;
+
+      for (const item of leads) {
+        const lead = item.lead || item;
+        allEntries.push({
+          name: [lead.first_name, lead.last_name].filter(Boolean).join(' ') || lead.name || 'Unknown',
+          first_name: lead.first_name || '',
+          last_name: lead.last_name || '',
+          email: lead.work_email || lead.personal_email || '',
+          title: lead.position || lead.headline || '',
+          company: lead.company_name || '',
+          linkedin: lead.linkedin || '',
+          linkedin_id: lead.ln_id || '',
+          phone: lead.work_phone_number || lead.personal_phone_number || '',
+          location: lead.raw_address || '',
+          status: lead.status || '',
+        });
+      }
+
+      if (!data.has_more) break;
+      offset += limit;
+    }
+
+    if (allEntries.length === 0) {
+      return `GetSales list "${listName || listUuid}" has no leads.`;
+    }
+
+    // Cache for bulk_write
+    _cachedListEntries = {
+      listName: `getsales_${listName || listUuid}`,
+      type: 'contacts',
+      entries: allEntries,
+      totalCount: allEntries.length,
+    };
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    let summary = `✅ Fetched ALL ${allEntries.length} leads from GetSales list "${listName}" in ${elapsed}s.\n\n`;
+
+    const sampleCount = Math.min(5, allEntries.length);
+    summary += `Sample leads (${sampleCount} of ${allEntries.length}):\n`;
+    for (let i = 0; i < sampleCount; i++) {
+      const e = allEntries[i];
+      summary += `• ${e.name}`;
+      if (e.title) summary += ` — ${e.title}`;
+      if (e.company) summary += ` at ${e.company}`;
+      if (e.email) summary += ` | ${e.email}`;
+      summary += '\n';
+    }
+
+    summary += `\nAvailable fields: name, first_name, last_name, email, title, company, linkedin, linkedin_id, phone, location, status`;
+    summary += `\n\n[Dataset cached — respond with bulk_write using source: "getsales_list" and a fields mapping to write all ${allEntries.length} entries to the sheet]`;
+
+    return summary;
+  } catch (e) {
+    return `GetSales pull leads error: ${e.message}`;
+  }
+}
+
+/**
+ * Gets all automations (flows) from GetSales.io.
+ */
+async function getsalesGetAutomations(input: {
+  search?: string;
+}): Promise<string> {
+  if (!getGetsalesApiKey()) {
+    return 'GetSales unavailable: No API key configured.';
+  }
+
+  try {
+    const allAutomations: Array<{ uuid: string; name: string; status: string }> = [];
+    let offset = 0;
+    const limit = 50;
+
+    while (true) {
+      const query = new URLSearchParams({
+        limit: limit.toString(),
+        offset: offset.toString(),
+        order_field: 'created_at',
+        order_type: 'desc',
+      }).toString();
+
+      const data = await getsalesRequest(`/flows/api/flows?${query}`);
+      allAutomations.push(...data.data.map((a: any) => ({
+        uuid: a.uuid,
+        name: a.name,
+        status: a.status,
+      })));
+
+      if (!data.has_more) break;
+      offset += limit;
+    }
+
+    let filtered = allAutomations;
+    if (input.search) {
+      const searchLower = input.search.toLowerCase();
+      filtered = allAutomations.filter(a => a.name.toLowerCase().includes(searchLower));
+    }
+
+    if (filtered.length === 0) {
+      return input.search
+        ? `No GetSales automations found matching "${input.search}".`
+        : 'No automations found in GetSales.';
+    }
+
+    let result = `Found ${filtered.length} GetSales automations:\n\n`;
+    for (const a of filtered) {
+      result += `• "${a.name}" (uuid: ${a.uuid}) — status: ${a.status}\n`;
+    }
+    return truncateResult(result, 3000);
+  } catch (e) {
+    return `GetSales get automations error: ${e.message}`;
+  }
+}
+
+/**
+ * Adds a lead to a GetSales automation (flow).
+ */
+async function getsalesAddToAutomation(input: {
+  lead_uuid: string;
+  automation_uuid: string;
+}): Promise<string> {
+  if (!getGetsalesApiKey()) {
+    return 'GetSales unavailable: No API key configured.';
+  }
+
+  try {
+    await getsalesRequest(
+      `/flows/api/flows/${input.automation_uuid}/leads/${input.lead_uuid}`,
+      'POST'
+    );
+    return `✅ Added lead ${input.lead_uuid} to automation ${input.automation_uuid}`;
+  } catch (e) {
+    return `GetSales add to automation error: ${e.message}`;
   }
 }
 

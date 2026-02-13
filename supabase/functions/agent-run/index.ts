@@ -15,7 +15,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { buildChatPrompt, buildRowPrompt, buildToolDefinitions, parseAgentConfig } from '../lib/prompt-builder.ts';
-import { executeToolCalls, setApolloApiKey, setZerobounceApiKey, getCachedListEntries } from '../lib/tools.ts';
+import { executeToolCalls, setApolloApiKey, setZerobounceApiKey, setGetsalesApiKey, getCachedListEntries } from '../lib/tools.ts';
 import { SheetsClient } from '../lib/sheets-api.ts';
 import type { ChatRequest, StartRunRequest, StopRunRequest, ChatResponse, AgentConfig, SheetContext, RowData } from '../lib/types.ts';
 
@@ -40,7 +40,7 @@ Deno.serve(async (req) => {
       headers: {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Spreadsheet-Id, X-User-Email, X-Apollo-Api-Key, X-Zerobounce-Api-Key, apikey',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Spreadsheet-Id, X-User-Email, X-Apollo-Api-Key, X-Zerobounce-Api-Key, X-Getsales-Api-Key, apikey',
       },
     });
   }
@@ -54,6 +54,8 @@ Deno.serve(async (req) => {
     if (apolloKey) setApolloApiKey(apolloKey);
     const zerobounceKey = req.headers.get('X-Zerobounce-Api-Key');
     if (zerobounceKey) setZerobounceApiKey(zerobounceKey);
+    const getsalesKey = req.headers.get('X-Getsales-Api-Key');
+    if (getsalesKey) setGetsalesApiKey(getsalesKey);
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
     const user = await ensureUser(supabase, userEmail);
@@ -159,7 +161,7 @@ async function handleChat(request: ChatRequest, user: any): Promise<ChatResponse
 
       // If Claude used a cached source format (apollo_list OR apollo_search),
       // fill in rows from the cached entries
-      if (bulkWrite.source === 'apollo_list' || bulkWrite.source === 'apollo_search') {
+      if (bulkWrite.source === 'apollo_list' || bulkWrite.source === 'apollo_search' || bulkWrite.source === 'getsales_list') {
         const cached = getCachedListEntries();
         if (cached && cached.entries.length > 0) {
           const fields = bulkWrite.fields || (
@@ -489,10 +491,12 @@ async function processBatchAsync(
       const hasWebTools = (config.tools || []).some(t => ['search', 'web_scrape', 'web_research'].includes(t));
       const hasApolloTools = (config.tools || []).some(t => t.startsWith('apollo_'));
       const hasZerobounceTools = (config.tools || []).some(t => t.startsWith('zerobounce_'));
+      const hasGetsalesTools = (config.tools || []).some(t => t.startsWith('getsales_'));
       const modelParts = [MODEL];
       if (hasWebTools) modelParts.push('perplexity/sonar');
       if (hasApolloTools) modelParts.push('apollo.io');
       if (hasZerobounceTools) modelParts.push('zerobounce');
+      if (hasGetsalesTools) modelParts.push('getsales.io');
       const modelsUsed = modelParts.join(' + ');
 
       await supabase

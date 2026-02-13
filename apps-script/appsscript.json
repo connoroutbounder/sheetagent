@@ -12,7 +12,8 @@
   "urlFetchWhitelist": [
     "https://djvyqtiespdxevlqacue.supabase.co/",
     "https://api.apollo.io/",
-    "https://api.zerobounce.net/"
+    "https://api.zerobounce.net/",
+    "https://amazing.getsales.io/"
   ],
   "addOns": {
     "common": {

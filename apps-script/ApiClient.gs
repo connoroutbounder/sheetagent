@@ -57,6 +57,10 @@ const ApiClient = {
     if (zerobounceKey) {
       headers['X-Zerobounce-Api-Key'] = zerobounceKey;
     }
+    const getsalesKey = userProps.getProperty('getsales_api_key');
+    if (getsalesKey) {
+      headers['X-Getsales-Api-Key'] = getsalesKey;
+    }
     
     const options = {
       method: method,

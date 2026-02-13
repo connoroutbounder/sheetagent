@@ -45,11 +45,16 @@
   <input type="password" id="zerobounceApiKey" placeholder="Enter your ZeroBounce API key" />
   <div class="help">For email validation, deliverability checks, email format guessing. Get yours at <a href="https://www.zerobounce.net/members/apikey/" target="_blank" style="color: #34d399;">ZeroBounce Dashboard</a></div>
 
+  <label>🔴 GetSales API Key</label>
+  <input type="password" id="getsalesApiKey" placeholder="Enter your GetSales.io API key" />
+  <div class="help">For LinkedIn outreach: push/pull leads, manage lists, trigger automations. Get yours from <a href="https://app.getsales.io/settings/api" target="_blank" style="color: #34d399;">GetSales Settings</a></div>
+
   <div class="btn-row" style="flex-wrap: wrap; gap: 6px;">
     <button class="btn-primary" onclick="save()">Save</button>
     <button class="btn-test" onclick="testBackend()">Test Backend</button>
     <button class="btn-test" onclick="testApollo()" style="color: #8b5cf6; border-color: #c4b5fd;">Test Apollo</button>
     <button class="btn-test" onclick="testZerobounce()" style="color: #ca8a04; border-color: #fde68a;">Test ZeroBounce</button>
+    <button class="btn-test" onclick="testGetsales()" style="color: #ef4444; border-color: #fca5a5;">Test GetSales</button>
     <button class="btn-secondary" onclick="google.script.host.close()">Cancel</button>
   </div>
 
@@ -61,6 +66,7 @@
       if (settings.apiKey) document.getElementById('apiKey').value = settings.apiKey;
       if (settings.apolloApiKey) document.getElementById('apolloApiKey').value = settings.apolloApiKey;
       if (settings.zerobounceApiKey) document.getElementById('zerobounceApiKey').value = settings.zerobounceApiKey;
+      if (settings.getsalesApiKey) document.getElementById('getsalesApiKey').value = settings.getsalesApiKey;
     }).getSettings();
 
     function save() {
@@ -69,6 +75,7 @@
         apiKey: document.getElementById('apiKey').value.trim(),
         apolloApiKey: document.getElementById('apolloApiKey').value.trim(),
         zerobounceApiKey: document.getElementById('zerobounceApiKey').value.trim(),
+        getsalesApiKey: document.getElementById('getsalesApiKey').value.trim(),
       };
       google.script.run.withSuccessHandler(function() {
         showStatus('success', 'Settings saved!');
@@ -106,6 +113,16 @@
       }).withFailureHandler(function(err) {
         showStatus('error', 'ZeroBounce test failed: ' + err.message);
       }).testZerobounceConnection();
+    }
+
+    function testGetsales() {
+      showStatus('', 'Testing GetSales.io connection...');
+      google.script.run.withSuccessHandler(function(result) {
+        if (result.success) showStatus('success', '🔴 ' + result.message);
+        else showStatus('error', '🔴 ' + result.message);
+      }).withFailureHandler(function(err) {
+        showStatus('error', 'GetSales test failed: ' + err.message);
+      }).testGetsalesConnection();
     }
 
     function showStatus(type, msg) {

@@ -7,11 +7,12 @@
  * - Sheet context (headers, column analysis)
  * - Row-specific data (input values, per-row instructions)
  * 
- * The agent uses FOUR tool categories:
+ * The agent uses FIVE tool categories:
  * - 🔵 Claude: reasoning, planning, analysis, writing
  * - 🟢 Perplexity: web search, scraping, live data lookup
  * - 🟣 Apollo.io: contact/company enrichment, email finding, people search
  * - 🟡 ZeroBounce: email validation, deliverability check, email format guessing
+ * - 🔴 GetSales.io: LinkedIn sales engagement, lead push/pull, list management, automations
  * 
  * The chat prompt instructs Claude to announce which tool/model
  * will handle each step, so the user sees the routing.
@@ -41,17 +42,19 @@ AVAILABLE TOOL CATEGORIES:
 - 🟣 Apollo.io tools: apollo_enrich_person, apollo_enrich_company, apollo_search_people, apollo_find_email — for B2B contact/company data, email finding, professional enrichment
 - 🟣 Apollo.io list tools: apollo_get_lists, apollo_get_list_entries, apollo_create_list, apollo_add_contact_to_list, apollo_add_account_to_list — for reading from and pushing to Apollo saved lists
 - 🟡 ZeroBounce tools: zerobounce_validate, zerobounce_batch_validate, zerobounce_guess_format — for email verification, deliverability checks, email format detection
+- 🔴 GetSales.io tools: getsales_get_lists, getsales_create_list, getsales_push_leads, getsales_pull_leads, getsales_get_automations, getsales_add_to_automation — for LinkedIn outreach lead management, pushing/pulling leads, and automation workflows
 - 🔵 Claude (you): reasoning, analysis, summarization, writing, data transformation — no tool call needed`;
 
 const CHAT_SYSTEM_PROMPT = `You are an AI agent builder embedded in a Google Sheets sidebar. You help users create agents that process their spreadsheet data row by row.
 
 You can see the user's active sheet structure — headers, column types, sample data, and which rows need processing.
 
-YOU HAVE FOUR TOOL CATEGORIES:
+YOU HAVE FIVE TOOL CATEGORIES:
 - **🔵 Claude** (you) — reasoning, analysis, summarization, writing, classification, data transformation
 - **🟢 Perplexity** — web search, finding URLs, live data lookup, general web research, news, anything requiring fresh internet data
 - **🟣 Apollo.io** — B2B sales intelligence: contact enrichment (name → email, phone, title, LinkedIn), company enrichment (domain → industry, size, revenue, funding, tech stack), people search (find decision-makers by title/company/location), email finding, AND list management (get lists, create lists, add contacts/companies to lists)
 - **🟡 ZeroBounce** — email verification and validation: checks if emails are deliverable (valid/invalid/catch-all/disposable), detects email format patterns for domains, and can construct probable emails from name + domain
+- **🔴 GetSales.io** — LinkedIn sales engagement platform: push/pull leads, manage lead lists, browse/trigger automations (flows), sync contact data for LinkedIn outreach campaigns
 
 TOOL ROUTING RULES:
 - Need contact/company enrichment data (emails, phones, titles, company details)? → Use 🟣 Apollo tools
@@ -61,6 +64,10 @@ TOOL ROUTING RULES:
 - Need analysis, writing, classification, formatting? → 🔵 Claude handles it directly
 - Need BOTH enrichment + validation? → Chain them: "🟣 Apollo will find the email, then 🟡 ZeroBounce will verify it's deliverable"
 - If data could come from either Apollo or web search, prefer Apollo for B2B data (more structured, faster) and Perplexity for general info
+- Need to push leads into a LinkedIn outreach tool? → Use 🔴 GetSales tools (getsales_push_leads)
+- Need to pull leads FROM GetSales lists? → Call getsales_pull_leads tool NOW during chat, then bulk_write with source: "getsales_list"
+- Need to browse GetSales lists or automations? → Call getsales_get_lists or getsales_get_automations NOW
+- Need to add a lead to a GetSales automation/flow? → Use getsales_add_to_automation in an agent_config
 
 APOLLO CONTACT PULL STRATEGY:
 - **Small companies (<200 employees)**: Pull ALL contacts — no filters needed, full employee list is manageable
@@ -78,6 +85,9 @@ CRITICAL RULES:
 - If a task needs email validation → set tools to include "zerobounce_validate" or "zerobounce_batch_validate"
 - If a task needs to guess/construct emails from names → set tools to include "zerobounce_guess_format"
 - If a task needs web data → set tools to include "search" and/or "web_scrape" (these use Perplexity under the hood)
+- If a task needs to push leads to GetSales → set tools to include "getsales_push_leads" in an agent_config
+- Need to PULL leads from a GetSales list? → Call getsales_pull_leads tool NOW during this chat, then return a bulk_write block with source: "getsales_list"
+- Need to find or browse GetSales lists? → Call getsales_get_lists tool with optional search term NOW
 - If a task is pure analysis/writing → set tools to []
 - If the user's intent is clear (e.g. "find emails for these contacts"), just do it.
 - If a column doesn't exist yet for output, pick the next empty column letter.
@@ -131,6 +141,18 @@ After calling apollo_get_list_entries, the full dataset is cached server-side. Y
 Available fields for account lists: name, domain, website, industry, employees
 Available fields for contact lists: name, email, title, company, domain, linkedin
 
+**For GetSales list imports:**
+After calling getsales_pull_leads, the full dataset is cached. Specify fields→columns:
+\`\`\`bulk_write
+{
+  "source": "getsales_list",
+  "sheetName": "Sheet2",
+  "columns": ["A", "B", "C", "D"],
+  "fields": ["name", "email", "title", "company"]
+}
+\`\`\`
+Available fields for GetSales leads: name, first_name, last_name, email, title, company, linkedin, linkedin_id, phone, location, status
+
 **For small/manual datasets (non-Apollo):**
 \`\`\`bulk_write
 {
@@ -150,23 +172,29 @@ WHEN TO USE WHICH FORMAT:
 - "Add these companies to an Apollo list" → agent_config with apollo_add_account_to_list tool
 - "Enrich the website for each company" → agent_config (processes existing rows)
 - "Import contacts from Apollo list X into column A and B" → Call apollo_get_list_entries, then bulk_write with source: "apollo_list"
+- "Push these leads to GetSales" → agent_config with getsales_push_leads tool (row-by-row from sheet)
+- "Pull leads from GetSales list X" → Call getsales_pull_leads tool, then bulk_write with source: "getsales_list"
+- "Add leads to a GetSales automation" → agent_config with getsales_add_to_automation tool
 
 IMPORTANT FOR bulk_write:
-- You have access to Apollo tools during this chat. CALL THEM to fetch data before writing.
-- When the user says "pull from list X", call apollo_get_list_entries({ list_name: "X" }) to get the data.
+- You have access to Apollo AND GetSales tools during this chat. CALL THEM to fetch data before writing.
+- When the user says "pull from Apollo list X", call apollo_get_list_entries({ list_name: "X" }) to get the data.
 - When the user says "pull all employees from X", call apollo_search_people with pull_all: true + organization_domains: ["x.com"]. This auto-paginates to get ALL contacts.
-- After the tool returns, respond with a bulk_write block. For Apollo data, use source: "apollo_list" (for list pulls) or source: "apollo_search" (for search pulls) with a fields mapping — do NOT try to enumerate all rows yourself. The server will populate rows from the cached data.
+- When the user says "pull leads from GetSales list X", call getsales_pull_leads({ list_name: "X" }) to get the data.
+- After the tool returns, respond with a bulk_write block. Use the correct source: "apollo_list", "apollo_search", or "getsales_list" — with a fields mapping. Do NOT try to enumerate all rows yourself. The server will populate rows from the cached data.
 - The user's sheet may already have data — bulk_write automatically appends after the last row ON THE TARGET SHEET.
 - If the user mentions a specific sheet (e.g. "post to Sheet2", "add to the Employees tab"), ALWAYS include "sheetName" in the bulk_write block.
 - Match the columns the user specifies (e.g. "column A and B" → columns: ["A", "B"]).
 - Map the right fields to the right columns (e.g. "names and websites" → fields: ["name", "domain"]).
-- For contact search pulls, available fields: name, first_name, last_name, title, company, domain, linkedin, email.
+- For Apollo contact search pulls, available fields: name, first_name, last_name, title, company, domain, linkedin, email.
+- For GetSales pulls, available fields: name, first_name, last_name, email, title, company, linkedin, linkedin_id, phone, location, status.
 
 TOOL NAME REFERENCE:
 - Perplexity web tools: "search", "web_scrape", "web_research"
 - Apollo.io enrichment tools: "apollo_enrich_person", "apollo_enrich_company", "apollo_search_people", "apollo_find_email"
 - Apollo.io list tools: "apollo_get_lists", "apollo_get_list_entries", "apollo_create_list", "apollo_add_contact_to_list", "apollo_add_account_to_list"
 - ZeroBounce tools: "zerobounce_validate", "zerobounce_batch_validate", "zerobounce_guess_format", "zerobounce_credits"
+- GetSales.io tools: "getsales_get_lists", "getsales_create_list", "getsales_push_leads", "getsales_pull_leads", "getsales_get_automations", "getsales_add_to_automation"
 
 IMPORTANT: Include the agent_config or bulk_write block as soon as the user's intent is clear. Do not wait for multiple rounds of confirmation.`;
 
@@ -223,8 +251,9 @@ export function buildRowPrompt(
   const hasWebTools = (config.tools || []).some(t => ['search', 'web_scrape', 'web_research'].includes(t));
   const hasApolloTools = (config.tools || []).some(t => t.startsWith('apollo_'));
   const hasZerobounceTools = (config.tools || []).some(t => t.startsWith('zerobounce_'));
+  const hasGetsalesTools = (config.tools || []).some(t => t.startsWith('getsales_'));
   
-  if (hasWebTools || hasApolloTools || hasZerobounceTools) {
+  if (hasWebTools || hasApolloTools || hasZerobounceTools || hasGetsalesTools) {
     system += '\n\nMODEL ROUTING:';
     if (hasWebTools) {
       system += '\n- 🟢 Perplexity web tools available: Use web_search or web_scrape for live web information. Returns accurate, cited results.';
@@ -271,6 +300,17 @@ export function buildRowPrompt(
     }
     if (hasApolloTools && hasZerobounceTools) {
       system += '\n- POWERFUL COMBO: Use 🟣 Apollo to find contacts/emails, then 🟡 ZeroBounce to verify deliverability. Report both the email and its validation status.';
+    }
+    if (hasGetsalesTools) {
+      system += '\n- 🔴 GetSales.io tools available. LinkedIn sales engagement platform for lead management and outreach automation.';
+      system += '\n\nGETSALES BEST PRACTICES:';
+      system += '\n- **Push a lead**: getsales_push_leads({ list_name: "My List", leads: [{ first_name: "John", last_name: "Doe", email: "john@co.com", company_name: "Company", position: "CEO", linkedin_id: "john-doe-123" }] })';
+      system += '\n- **LinkedIn ID**: Extract from LinkedIn URL: "https://www.linkedin.com/in/john-doe-123" → "john-doe-123". Auto-cleaned if full URL is passed.';
+      system += '\n- **Pull leads from list**: getsales_pull_leads({ list_name: "My List" }) — auto-paginates, returns all leads.';
+      system += '\n- **Browse lists**: getsales_get_lists({ search: "keyword" })';
+      system += '\n- **Browse automations**: getsales_get_automations({ search: "keyword" })';
+      system += '\n- **Add to automation**: After pushing a lead, use getsales_add_to_automation with the returned lead UUID.';
+      system += '\n- **WORKFLOW — Apollo to GetSales**: Use 🟣 Apollo to enrich, then 🔴 GetSales to push the enriched lead for LinkedIn outreach.';
     }
   }
 
@@ -754,6 +794,147 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
         type: 'object',
         properties: {},
         required: [],
+      },
+    });
+  }
+
+  // =============================================================
+  // 🔴 GETSALES.io TOOL DEFINITIONS
+  // =============================================================
+
+  if (enabledTools.includes('getsales_get_lists')) {
+    tools.push({
+      name: 'getsales_get_lists',
+      description: 'Get all contact lists from GetSales.io. Optionally filter by name with a search term. Returns list names and UUIDs.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          search: {
+            type: 'string',
+            description: 'Optional: filter lists by name (case-insensitive partial match)',
+          },
+        },
+        required: [],
+      },
+    });
+  }
+
+  if (enabledTools.includes('getsales_create_list')) {
+    tools.push({
+      name: 'getsales_create_list',
+      description: 'Create a new contact list in GetSales.io. Returns the new list UUID.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: 'Name for the new list',
+          },
+        },
+        required: ['name'],
+      },
+    });
+  }
+
+  if (enabledTools.includes('getsales_push_leads')) {
+    tools.push({
+      name: 'getsales_push_leads',
+      description: 'Push (upsert) one or more leads into a GetSales.io list. Each lead can include LinkedIn ID, name, email, company, title, headline, etc. Finds or creates the list by name if list_uuid is not provided. Use this for syncing sheet data into GetSales for LinkedIn outreach.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          list_uuid: {
+            type: 'string',
+            description: 'UUID of the target list. If omitted, list_name is used to find/create the list.',
+          },
+          list_name: {
+            type: 'string',
+            description: 'Name of the target list. Used to find or create the list if list_uuid is not provided.',
+          },
+          move_to_list: {
+            type: 'boolean',
+            description: 'If true, moves existing leads to this list (default: false)',
+          },
+          leads: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                linkedin_id: { type: 'string', description: 'LinkedIn profile ID or full URL (auto-cleaned)' },
+                first_name: { type: 'string' },
+                last_name: { type: 'string' },
+                company_name: { type: 'string' },
+                email: { type: 'string' },
+                headline: { type: 'string' },
+                position: { type: 'string', description: 'Job title/position' },
+                raw_address: { type: 'string', description: 'Location (city, state, country)' },
+                linkedin: { type: 'string', description: 'Full LinkedIn profile URL' },
+                custom_fields: { type: 'object', description: 'Custom field key-value pairs' },
+              },
+            },
+            description: 'Array of lead objects to push',
+          },
+        },
+        required: ['leads'],
+      },
+    });
+  }
+
+  if (enabledTools.includes('getsales_pull_leads')) {
+    tools.push({
+      name: 'getsales_pull_leads',
+      description: 'Pull ALL leads from a GetSales.io list. Auto-paginates to get every lead. Data is cached server-side for bulk_write. Provide either list_uuid or list_name. Returns a summary with sample leads and available fields.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          list_uuid: {
+            type: 'string',
+            description: 'UUID of the list to pull from',
+          },
+          list_name: {
+            type: 'string',
+            description: 'Name of the list to pull from (searched if UUID not provided)',
+          },
+        },
+        required: [],
+      },
+    });
+  }
+
+  if (enabledTools.includes('getsales_get_automations')) {
+    tools.push({
+      name: 'getsales_get_automations',
+      description: 'Get all automations (flows) from GetSales.io. Optionally filter by name. Returns automation names, UUIDs, and statuses.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          search: {
+            type: 'string',
+            description: 'Optional: filter automations by name (case-insensitive partial match)',
+          },
+        },
+        required: [],
+      },
+    });
+  }
+
+  if (enabledTools.includes('getsales_add_to_automation')) {
+    tools.push({
+      name: 'getsales_add_to_automation',
+      description: 'Add a lead to a GetSales.io automation (flow). Requires the lead UUID and automation UUID.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          lead_uuid: {
+            type: 'string',
+            description: 'UUID of the lead to add',
+          },
+          automation_uuid: {
+            type: 'string',
+            description: 'UUID of the automation/flow to add the lead to',
+          },
+        },
+        required: ['lead_uuid', 'automation_uuid'],
       },
     });
   }

@@ -465,6 +465,8 @@ function getSettings() {
     hasApolloApiKey: !!props.getProperty('apollo_api_key'),
     zerobounceApiKey: props.getProperty('zerobounce_api_key') ? '••••••••' : '',
     hasZerobounceApiKey: !!props.getProperty('zerobounce_api_key'),
+    getsalesApiKey: props.getProperty('getsales_api_key') ? '••••••••' : '',
+    hasGetsalesApiKey: !!props.getProperty('getsales_api_key'),
   };
 }
 
@@ -483,6 +485,9 @@ function saveSettings(settings) {
   }
   if (settings.zerobounceApiKey && settings.zerobounceApiKey !== '••••••••') {
     PropertiesService.getUserProperties().setProperty('zerobounce_api_key', settings.zerobounceApiKey);
+  }
+  if (settings.getsalesApiKey && settings.getsalesApiKey !== '••••••••') {
+    PropertiesService.getUserProperties().setProperty('getsales_api_key', settings.getsalesApiKey);
   }
   return { success: true };
 }
@@ -549,6 +554,42 @@ function testZerobounceConnection() {
       return { success: false, message: 'Invalid API key — no credits data returned.' };
     } else {
       return { success: false, message: 'ZeroBounce returned HTTP ' + code + '. Check your API key.' };
+    }
+  } catch(e) {
+    return { success: false, message: 'Connection failed: ' + e.toString() };
+  }
+}
+
+/**
+ * Tests the GetSales.io API connection using the user's saved key.
+ * Makes a lightweight lists call to verify the key works.
+ */
+function testGetsalesConnection() {
+  var key = PropertiesService.getUserProperties().getProperty('getsales_api_key');
+  if (!key) {
+    return { success: false, message: 'No GetSales API key saved. Enter your key and click Save first.' };
+  }
+  
+  try {
+    var response = UrlFetchApp.fetch('https://amazing.getsales.io/leads/api/lists?limit=1&offset=0', {
+      method: 'get',
+      headers: {
+        'Authorization': 'Bearer ' + key,
+        'Accept': 'application/json',
+        'Cache-Control': 'no-cache',
+      },
+      muteHttpExceptions: true,
+    });
+    
+    var code = response.getResponseCode();
+    if (code === 200) {
+      var data = JSON.parse(response.getContentText());
+      var total = data.total || 0;
+      return { success: true, message: '✅ GetSales.io connected! Found ' + total + ' list(s).' };
+    } else if (code === 401 || code === 403) {
+      return { success: false, message: 'Invalid API key (HTTP ' + code + '). Check your key in GetSales Settings.' };
+    } else {
+      return { success: false, message: 'GetSales returned HTTP ' + code + ': ' + response.getContentText().substring(0, 200) };
     }
   } catch(e) {
     return { success: false, message: 'Connection failed: ' + e.toString() };
