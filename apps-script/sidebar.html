@@ -64,6 +64,17 @@
     .header-text { flex: 1; }
     .header-title { font-weight: 600; font-size: 14px; }
     .header-sub { font-size: 11px; color: var(--text-muted); }
+    .header-ws {
+      font-size: 10px;
+      color: var(--accent);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      opacity: 0.8;
+      transition: opacity 0.15s;
+    }
+    .header-ws:hover { opacity: 1; text-decoration: underline; }
 
     .header-actions { display: flex; gap: 6px; }
     .header-btn {
@@ -449,10 +460,14 @@
     <div class="logo">⚡</div>
     <div class="header-text">
       <div class="header-title">Agent Builder</div>
-      <div class="header-sub" id="sheetName">Loading sheet...</div>
+      <div class="header-sub">
+        <span id="sheetName">Loading sheet...</span>
+        <span style="margin: 0 4px; color: var(--border);">·</span>
+        <span class="header-ws" id="workspaceName" onclick="google.script.run.showWorkspaces()" title="Switch workspace">🗂 Default</span>
+      </div>
     </div>
     <div class="header-actions">
-      <button class="header-btn" onclick="google.script.run.showMemory()" title="Agent Memory" style="font-size: 13px;">🧠</button>
+      <button class="header-btn" onclick="google.script.run.showWorkspaces()" title="Workspaces" style="font-size: 12px;">🗂</button>
       <button class="header-btn" onclick="refreshContext()" title="Refresh sheet context">↻</button>
     </div>
   </div>
@@ -551,6 +566,7 @@
       loadSheetContext();
       loadAgents();
       loadMemory();
+      loadWorkspaceInfo();
       // Check for selection changes every 3 seconds
       selectionCheckInterval = setInterval(checkSelection, 3000);
       checkSelection(); // Initial check
@@ -564,6 +580,16 @@
           }
         })
         .getMemory();
+    }
+
+    function loadWorkspaceInfo() {
+      google.script.run
+        .withSuccessHandler(function(ws) {
+          if (ws && ws.name) {
+            document.getElementById('workspaceName').textContent = '🗂 ' + ws.name;
+          }
+        })
+        .getActiveWorkspace();
     }
 
     function checkSelection() {

@@ -33,18 +33,9 @@ function onOpen(e) {
     .addItem('Run Last Agent', 'runLastAgent')
     .addItem('Stop Running Agent', 'stopRunningAgent')
     .addSeparator()
-    .addItem('🧠 Agent Memory', 'showMemory')
+    .addItem('🗂 Workspaces', 'showWorkspaces')
     .addItem('Settings', 'showSettings')
     .addToUi();
-}
-
-/**
- * Homepage trigger for the add-on card interface.
- * Called when the add-on is opened from the Extensions menu.
- * Opens the sidebar automatically.
- */
-function onHomepage(e) {
-  showSidebar();
 }
 
 /**
@@ -69,72 +60,373 @@ function showSettings() {
 }
 
 /**
- * Opens the Agent Memory dialog.
+ * Opens the Workspaces dialog.
  */
-function showMemory() {
-  const html = HtmlService.createHtmlOutputFromFile('memory')
-    .setTitle('Agent Memory')
-    .setWidth(520)
-    .setHeight(600);
-  SpreadsheetApp.getUi().showModalDialog(html, '🧠 Agent Memory');
+function showWorkspaces() {
+  var html = HtmlService.createHtmlOutputFromFile('workspace')
+    .setTitle('Workspaces')
+    .setWidth(480)
+    .setHeight(560);
+  SpreadsheetApp.getUi().showModalDialog(html, '🗂 Workspaces');
+}
+
+// =============================================================
+// WORKSPACE SYSTEM
+// =============================================================
+// Each workspace stores its own Agent Memory and GetSales API key.
+// Workspace metadata is stored in UserProperties (follows the user).
+// Workspace data (memory, keys) is chunked in UserProperties with
+// a ws_{id}_ prefix.
+
+var CHUNK_SIZE_ = 8000; // 8KB per property chunk
+
+/**
+ * Returns the active workspace ID, auto-creating a default if none exist.
+ */
+function _getActiveWorkspaceId() {
+  var props = PropertiesService.getUserProperties();
+  var activeId = props.getProperty('active_workspace_id');
+  
+  if (!activeId) {
+    // Auto-create a "Default" workspace on first use
+    var list = _getWorkspaceList();
+    if (list.length === 0) {
+      var newId = _generateId();
+      list.push({ id: newId, name: 'Default', createdAt: new Date().toISOString() });
+      props.setProperty('workspaces_list', JSON.stringify(list));
+      
+      // Migrate any existing memory from old DocumentProperties format
+      _migrateOldMemory(newId);
+      // Migrate old global GetSales key if present
+      _migrateOldGetsalesKey(newId);
+      
+      activeId = newId;
+    } else {
+      activeId = list[0].id;
+    }
+    props.setProperty('active_workspace_id', activeId);
+  }
+  
+  return activeId;
+}
+
+function _getWorkspaceList() {
+  var raw = PropertiesService.getUserProperties().getProperty('workspaces_list');
+  if (!raw) return [];
+  try { return JSON.parse(raw); } catch(e) { return []; }
+}
+
+function _generateId() {
+  var chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  var id = '';
+  for (var i = 0; i < 12; i++) {
+    id += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return id;
 }
 
 /**
- * Gets the saved agent memory (context).
- * Uses DocumentProperties so each spreadsheet has its own memory.
- * Large text is chunked across multiple properties.
+ * Migrate old memory from DocumentProperties to the new workspace.
  */
-function getMemory() {
+function _migrateOldMemory(wsId) {
   var docProps = PropertiesService.getDocumentProperties();
   var chunkCount = parseInt(docProps.getProperty('agent_memory_chunks') || '0');
+  var oldText = '';
   
-  if (chunkCount === 0) {
-    // Try single property (legacy or short text)
-    var single = docProps.getProperty('agent_memory') || '';
-    return { memory: single };
+  if (chunkCount > 0) {
+    for (var i = 0; i < chunkCount; i++) {
+      oldText += docProps.getProperty('agent_memory_' + i) || '';
+    }
+  } else {
+    oldText = docProps.getProperty('agent_memory') || '';
   }
   
-  // Reassemble from chunks
-  var text = '';
-  for (var i = 0; i < chunkCount; i++) {
-    text += docProps.getProperty('agent_memory_' + i) || '';
+  if (oldText) {
+    _saveChunkedText('ws_' + wsId + '_memory', oldText);
   }
-  return { memory: text };
 }
 
 /**
- * Saves agent memory (context).
- * Uses DocumentProperties so each spreadsheet has its own memory.
- * Chunks large text into 8KB segments to stay within Apps Script limits.
+ * Migrate old global GetSales key to the new workspace.
  */
-function saveMemory(text) {
-  var docProps = PropertiesService.getDocumentProperties();
-  var CHUNK_SIZE = 8000; // 8KB per chunk (under 9KB limit)
+function _migrateOldGetsalesKey(wsId) {
+  var props = PropertiesService.getUserProperties();
+  var oldKey = props.getProperty('getsales_api_key');
+  if (oldKey) {
+    props.setProperty('ws_' + wsId + '_getsales_key', oldKey);
+  }
+}
+
+/**
+ * Read chunked text from UserProperties with the given prefix.
+ */
+function _readChunkedText(prefix) {
+  var props = PropertiesService.getUserProperties();
+  var count = parseInt(props.getProperty(prefix + '_chunks') || '0');
+  if (count === 0) return '';
+  var text = '';
+  for (var i = 0; i < count; i++) {
+    text += props.getProperty(prefix + '_' + i) || '';
+  }
+  return text;
+}
+
+/**
+ * Save chunked text to UserProperties with the given prefix.
+ */
+function _saveChunkedText(prefix, text) {
+  var props = PropertiesService.getUserProperties();
   
   // Clear old chunks
-  var oldChunkCount = parseInt(docProps.getProperty('agent_memory_chunks') || '0');
-  for (var i = 0; i < oldChunkCount; i++) {
-    docProps.deleteProperty('agent_memory_' + i);
+  var oldCount = parseInt(props.getProperty(prefix + '_chunks') || '0');
+  for (var i = 0; i < oldCount; i++) {
+    props.deleteProperty(prefix + '_' + i);
   }
-  docProps.deleteProperty('agent_memory'); // legacy single property
   
   if (!text || text.length === 0) {
-    docProps.setProperty('agent_memory_chunks', '0');
-    return { success: true };
+    props.setProperty(prefix + '_chunks', '0');
+    return;
   }
   
-  // Chunk the text
   var chunks = [];
-  for (var j = 0; j < text.length; j += CHUNK_SIZE) {
-    chunks.push(text.substring(j, j + CHUNK_SIZE));
+  for (var j = 0; j < text.length; j += CHUNK_SIZE_) {
+    chunks.push(text.substring(j, j + CHUNK_SIZE_));
+  }
+  for (var k = 0; k < chunks.length; k++) {
+    props.setProperty(prefix + '_' + k, chunks[k]);
+  }
+  props.setProperty(prefix + '_chunks', String(chunks.length));
+}
+
+/**
+ * Delete all properties with a given prefix.
+ */
+function _deleteChunkedText(prefix) {
+  var props = PropertiesService.getUserProperties();
+  var count = parseInt(props.getProperty(prefix + '_chunks') || '0');
+  for (var i = 0; i < count; i++) {
+    props.deleteProperty(prefix + '_' + i);
+  }
+  props.deleteProperty(prefix + '_chunks');
+}
+
+// --- PUBLIC WORKSPACE API (called from workspace.html) ---
+
+/**
+ * Returns all workspaces and the active workspace ID.
+ */
+function getWorkspaces() {
+  var activeId = _getActiveWorkspaceId();
+  var list = _getWorkspaceList();
+  var props = PropertiesService.getUserProperties();
+  
+  var workspaces = list.map(function(ws) {
+    var memoryLen = 0;
+    var count = parseInt(props.getProperty('ws_' + ws.id + '_memory_chunks') || '0');
+    if (count > 0) {
+      // Approximate memory length from chunk count
+      for (var i = 0; i < count; i++) {
+        var chunk = props.getProperty('ws_' + ws.id + '_memory_' + i);
+        if (chunk) memoryLen += chunk.length;
+      }
+    }
+    
+    return {
+      id: ws.id,
+      name: ws.name,
+      hasGetsalesKey: !!props.getProperty('ws_' + ws.id + '_getsales_key'),
+      memoryLength: memoryLen,
+    };
+  });
+  
+  return { workspaces: workspaces, activeId: activeId };
+}
+
+/**
+ * Switch the active workspace.
+ */
+function switchWorkspace(id) {
+  var list = _getWorkspaceList();
+  var found = list.some(function(ws) { return ws.id === id; });
+  if (!found) return { success: false, error: 'Workspace not found' };
+  
+  PropertiesService.getUserProperties().setProperty('active_workspace_id', id);
+  return { success: true };
+}
+
+/**
+ * Get full details for a workspace (for the edit form).
+ */
+function getWorkspaceDetails(id) {
+  var list = _getWorkspaceList();
+  var ws = null;
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].id === id) { ws = list[i]; break; }
+  }
+  if (!ws) return { name: '', getsalesApiKey: '', memory: '' };
+  
+  var props = PropertiesService.getUserProperties();
+  var key = props.getProperty('ws_' + id + '_getsales_key') || '';
+  var memory = _readChunkedText('ws_' + id + '_memory');
+  
+  return {
+    name: ws.name,
+    getsalesApiKey: key ? '••••••••' : '',
+    memory: memory,
+  };
+}
+
+/**
+ * Save workspace details (update existing).
+ */
+function saveWorkspaceDetails(id, data) {
+  var list = _getWorkspaceList();
+  var found = false;
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].id === id) {
+      list[i].name = data.name || list[i].name;
+      found = true;
+      break;
+    }
+  }
+  if (!found) return { success: false, error: 'Workspace not found' };
+  
+  var props = PropertiesService.getUserProperties();
+  props.setProperty('workspaces_list', JSON.stringify(list));
+  
+  if (data.getsalesApiKey && data.getsalesApiKey !== '••••••••') {
+    props.setProperty('ws_' + id + '_getsales_key', data.getsalesApiKey);
   }
   
-  for (var k = 0; k < chunks.length; k++) {
-    docProps.setProperty('agent_memory_' + k, chunks[k]);
+  if (data.memory !== undefined) {
+    _saveChunkedText('ws_' + id + '_memory', data.memory);
   }
-  docProps.setProperty('agent_memory_chunks', String(chunks.length));
   
   return { success: true };
+}
+
+/**
+ * Create a new workspace and make it active.
+ */
+function createWorkspace(data) {
+  var id = _generateId();
+  var list = _getWorkspaceList();
+  list.push({ id: id, name: data.name || 'Untitled', createdAt: new Date().toISOString() });
+  
+  var props = PropertiesService.getUserProperties();
+  props.setProperty('workspaces_list', JSON.stringify(list));
+  props.setProperty('active_workspace_id', id);
+  
+  if (data.getsalesApiKey) {
+    props.setProperty('ws_' + id + '_getsales_key', data.getsalesApiKey);
+  }
+  if (data.memory) {
+    _saveChunkedText('ws_' + id + '_memory', data.memory);
+  }
+  
+  return { success: true, id: id };
+}
+
+/**
+ * Delete a workspace.
+ */
+function deleteWorkspace(id) {
+  var list = _getWorkspaceList();
+  list = list.filter(function(ws) { return ws.id !== id; });
+  
+  var props = PropertiesService.getUserProperties();
+  props.setProperty('workspaces_list', JSON.stringify(list));
+  
+  // Clean up workspace data
+  props.deleteProperty('ws_' + id + '_getsales_key');
+  _deleteChunkedText('ws_' + id + '_memory');
+  
+  // If we deleted the active workspace, switch to the first remaining one
+  if (props.getProperty('active_workspace_id') === id) {
+    if (list.length > 0) {
+      props.setProperty('active_workspace_id', list[0].id);
+    } else {
+      props.deleteProperty('active_workspace_id');
+    }
+  }
+  
+  return { success: true };
+}
+
+/**
+ * Test a GetSales API key directly (before saving).
+ */
+function testGetsalesKeyDirect(key) {
+  if (!key) {
+    return { success: false, message: 'No API key provided.' };
+  }
+  try {
+    var response = UrlFetchApp.fetch('https://amazing.getsales.io/leads/api/lists?limit=1&offset=0', {
+      method: 'get',
+      headers: {
+        'Authorization': 'Bearer ' + key,
+        'Accept': 'application/json',
+        'Cache-Control': 'no-cache',
+      },
+      muteHttpExceptions: true,
+    });
+    var code = response.getResponseCode();
+    if (code === 200) {
+      var data = JSON.parse(response.getContentText());
+      return { success: true, message: '✅ GetSales.io connected! Found ' + (data.total || 0) + ' list(s).' };
+    } else if (code === 401 || code === 403) {
+      return { success: false, message: 'Invalid API key (HTTP ' + code + ').' };
+    } else {
+      return { success: false, message: 'GetSales returned HTTP ' + code };
+    }
+  } catch(e) {
+    return { success: false, message: 'Connection failed: ' + e.toString() };
+  }
+}
+
+/**
+ * Returns the active workspace info for display in the sidebar.
+ */
+function getActiveWorkspace() {
+  var activeId = _getActiveWorkspaceId();
+  var list = _getWorkspaceList();
+  var ws = null;
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].id === activeId) { ws = list[i]; break; }
+  }
+  return {
+    id: activeId,
+    name: ws ? ws.name : 'Default',
+    totalWorkspaces: list.length,
+  };
+}
+
+// --- WORKSPACE-AWARE GETTERS (used by sendMessage, startAgentRun, etc.) ---
+
+/**
+ * Gets the agent memory for the ACTIVE workspace.
+ */
+function getMemory() {
+  var wsId = _getActiveWorkspaceId();
+  var memory = _readChunkedText('ws_' + wsId + '_memory');
+  return { memory: memory };
+}
+
+/**
+ * Saves agent memory for the ACTIVE workspace (backward compat for memory.html).
+ */
+function saveMemory(text) {
+  var wsId = _getActiveWorkspaceId();
+  _saveChunkedText('ws_' + wsId + '_memory', text || '');
+  return { success: true };
+}
+
+/**
+ * Gets the GetSales API key for the ACTIVE workspace.
+ */
+function getActiveGetsalesKey() {
+  var wsId = _getActiveWorkspaceId();
+  return PropertiesService.getUserProperties().getProperty('ws_' + wsId + '_getsales_key') || '';
 }
 
 /**
@@ -543,8 +835,6 @@ function getSettings() {
     hasApolloApiKey: !!props.getProperty('apollo_api_key'),
     zerobounceApiKey: props.getProperty('zerobounce_api_key') ? '••••••••' : '',
     hasZerobounceApiKey: !!props.getProperty('zerobounce_api_key'),
-    getsalesApiKey: props.getProperty('getsales_api_key') ? '••••••••' : '',
-    hasGetsalesApiKey: !!props.getProperty('getsales_api_key'),
   };
 }
 
@@ -563,9 +853,6 @@ function saveSettings(settings) {
   }
   if (settings.zerobounceApiKey && settings.zerobounceApiKey !== '••••••••') {
     PropertiesService.getUserProperties().setProperty('zerobounce_api_key', settings.zerobounceApiKey);
-  }
-  if (settings.getsalesApiKey && settings.getsalesApiKey !== '••••••••') {
-    PropertiesService.getUserProperties().setProperty('getsales_api_key', settings.getsalesApiKey);
   }
   return { success: true };
 }
@@ -639,39 +926,14 @@ function testZerobounceConnection() {
 }
 
 /**
- * Tests the GetSales.io API connection using the user's saved key.
- * Makes a lightweight lists call to verify the key works.
+ * Tests the GetSales.io API connection using the ACTIVE workspace key.
  */
 function testGetsalesConnection() {
-  var key = PropertiesService.getUserProperties().getProperty('getsales_api_key');
+  var key = getActiveGetsalesKey();
   if (!key) {
-    return { success: false, message: 'No GetSales API key saved. Enter your key and click Save first.' };
+    return { success: false, message: 'No GetSales API key in the active workspace. Open Workspaces to set it.' };
   }
-  
-  try {
-    var response = UrlFetchApp.fetch('https://amazing.getsales.io/leads/api/lists?limit=1&offset=0', {
-      method: 'get',
-      headers: {
-        'Authorization': 'Bearer ' + key,
-        'Accept': 'application/json',
-        'Cache-Control': 'no-cache',
-      },
-      muteHttpExceptions: true,
-    });
-    
-    var code = response.getResponseCode();
-    if (code === 200) {
-      var data = JSON.parse(response.getContentText());
-      var total = data.total || 0;
-      return { success: true, message: '✅ GetSales.io connected! Found ' + total + ' list(s).' };
-    } else if (code === 401 || code === 403) {
-      return { success: false, message: 'Invalid API key (HTTP ' + code + '). Check your key in GetSales Settings.' };
-    } else {
-      return { success: false, message: 'GetSales returned HTTP ' + code + ': ' + response.getContentText().substring(0, 200) };
-    }
-  } catch(e) {
-    return { success: false, message: 'Connection failed: ' + e.toString() };
-  }
+  return testGetsalesKeyDirect(key);
 }
 
 /**

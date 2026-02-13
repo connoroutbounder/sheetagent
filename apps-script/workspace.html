@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f1419;
+      color: #e2e8f0;
+      font-size: 13px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ---- VIEWS ---- */
+    .view { display: none; flex-direction: column; height: 100%; }
+    .view.active { display: flex; }
+
+    /* ---- LIST VIEW ---- */
+    .list-header {
+      padding: 20px 20px 12px;
+      flex-shrink: 0;
+    }
+    .list-header h2 { font-size: 17px; margin-bottom: 4px; }
+    .list-header .subtitle { color: #8899aa; font-size: 12px; line-height: 1.5; }
+
+    .workspace-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0 20px 20px;
+    }
+
+    .ws-card {
+      background: #1a2332;
+      border: 1px solid #2a3545;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 10px;
+      cursor: pointer;
+      transition: all 0.15s;
+      position: relative;
+    }
+    .ws-card:hover { border-color: #34d399; transform: translateY(-1px); }
+    .ws-card.active-ws { border-color: #34d399; background: #0f2a1f; }
+
+    .ws-card-top {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+    .ws-icon {
+      width: 32px; height: 32px; border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px; flex-shrink: 0;
+    }
+    .ws-card.active-ws .ws-icon { background: rgba(52,211,153,0.15); }
+    .ws-card:not(.active-ws) .ws-icon { background: #222d3d; }
+
+    .ws-name { font-weight: 600; font-size: 14px; flex: 1; }
+    .ws-badge {
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      background: rgba(52,211,153,0.15);
+      color: #34d399;
+      font-weight: 500;
+    }
+
+    .ws-meta {
+      display: flex;
+      gap: 12px;
+      font-size: 11px;
+      color: #8899aa;
+      margin-left: 42px;
+    }
+    .ws-meta-item { display: flex; align-items: center; gap: 4px; }
+
+    .ws-actions {
+      position: absolute;
+      top: 10px; right: 10px;
+      display: flex; gap: 4px;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    .ws-card:hover .ws-actions { opacity: 1; }
+
+    .ws-action-btn {
+      width: 26px; height: 26px; border-radius: 6px;
+      background: #222d3d; border: 1px solid #2a3545;
+      color: #8899aa; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; transition: all 0.15s;
+    }
+    .ws-action-btn:hover { background: #2a3545; color: #e2e8f0; }
+    .ws-action-btn.delete:hover { background: #4c1d1d; color: #f87171; border-color: #f87171; }
+
+    .add-btn {
+      width: 100%;
+      padding: 12px;
+      border-radius: 10px;
+      border: 2px dashed #2a3545;
+      background: transparent;
+      color: #8899aa;
+      cursor: pointer;
+      font-size: 13px;
+      font-family: inherit;
+      transition: all 0.15s;
+      margin-top: 4px;
+    }
+    .add-btn:hover { border-color: #34d399; color: #34d399; background: rgba(52,211,153,0.05); }
+
+    .list-footer {
+      padding: 12px 20px;
+      border-top: 1px solid #2a3545;
+      flex-shrink: 0;
+    }
+
+    /* ---- EDIT VIEW ---- */
+    .edit-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid #2a3545;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+    .back-btn {
+      width: 30px; height: 30px; border-radius: 8px;
+      background: #1a2332; border: 1px solid #2a3545;
+      color: #8899aa; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; transition: all 0.15s;
+    }
+    .back-btn:hover { color: #e2e8f0; background: #222d3d; }
+    .edit-title { font-weight: 600; font-size: 15px; flex: 1; }
+
+    .edit-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+    }
+
+    .field-group { margin-bottom: 18px; }
+    .field-label {
+      font-weight: 600; font-size: 12px;
+      color: #34d399; text-transform: uppercase;
+      letter-spacing: 0.5px; margin-bottom: 6px;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .field-help { font-size: 11px; color: #8899aa; margin-bottom: 8px; line-height: 1.4; }
+
+    input[type="text"], input[type="password"] {
+      width: 100%; padding: 10px 12px; border-radius: 8px;
+      background: #1a2332; border: 1px solid #2a3545;
+      color: #e2e8f0; font-size: 13px; font-family: inherit;
+      outline: none; transition: border-color 0.15s;
+    }
+    input:focus { border-color: #34d399; }
+    input::placeholder { color: #556677; }
+
+    .memory-textarea {
+      width: 100%; min-height: 180px; padding: 12px;
+      border-radius: 8px; background: #1a2332;
+      border: 1px solid #2a3545; color: #e2e8f0;
+      font-size: 13px; font-family: inherit;
+      resize: vertical; outline: none;
+      line-height: 1.5; transition: border-color 0.15s;
+    }
+    .memory-textarea:focus { border-color: #34d399; }
+    .memory-textarea::placeholder { color: #556677; }
+
+    .char-count {
+      font-size: 11px; color: #556677;
+      text-align: right; margin-top: 4px;
+    }
+    .char-count.warning { color: #fbbf24; }
+
+    .template-chips {
+      display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px;
+    }
+    .chip {
+      padding: 4px 10px; border-radius: 14px;
+      background: #1a2332; border: 1px solid #2a3545;
+      color: #8899aa; font-size: 11px; cursor: pointer;
+      transition: all 0.15s;
+    }
+    .chip:hover { background: #222d3d; color: #e2e8f0; border-color: #34d399; }
+
+    .edit-footer {
+      padding: 12px 20px;
+      border-top: 1px solid #2a3545;
+      display: flex; gap: 8px;
+      flex-shrink: 0;
+    }
+
+    button.primary {
+      padding: 8px 20px; border-radius: 8px; border: none;
+      background: #34d399; color: #000; cursor: pointer;
+      font-size: 13px; font-weight: 500; font-family: inherit;
+      transition: all 0.15s;
+    }
+    button.primary:hover { background: #4ade80; }
+
+    button.secondary {
+      padding: 8px 20px; border-radius: 8px;
+      background: #1a2332; border: 1px solid #2a3545;
+      color: #8899aa; cursor: pointer;
+      font-size: 13px; font-family: inherit;
+      transition: all 0.15s;
+    }
+    button.secondary:hover { background: #222d3d; color: #e2e8f0; }
+
+    .test-btn {
+      padding: 6px 14px; border-radius: 6px;
+      background: transparent; border: 1px solid #4c1d1d;
+      color: #f87171; cursor: pointer;
+      font-size: 11px; font-family: inherit;
+      transition: all 0.15s; margin-top: 6px;
+    }
+    .test-btn:hover { background: #4c1d1d; }
+
+    .status-msg {
+      margin-top: 10px; padding: 8px 12px;
+      border-radius: 6px; font-size: 12px; display: none;
+    }
+    .status-msg.success { display: block; background: #065f46; color: #34d399; }
+    .status-msg.error { display: block; background: #4c1d1d; color: #f87171; }
+
+    .divider {
+      border: none; border-top: 1px solid #2a3545;
+      margin: 4px 0 18px;
+    }
+
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #2a3545; border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+  <!-- ====== LIST VIEW ====== -->
+  <div class="view active" id="viewList">
+    <div class="list-header">
+      <h2>🗂 Workspaces</h2>
+      <p class="subtitle">
+        Each workspace has its own agent memory and GetSales API key.
+        Switch workspaces to change context.
+      </p>
+    </div>
+
+    <div class="workspace-list" id="workspaceList">
+      <!-- Populated by JS -->
+    </div>
+
+    <div class="list-footer">
+      <button class="add-btn" onclick="createNew()">+ New Workspace</button>
+    </div>
+  </div>
+
+  <!-- ====== EDIT VIEW ====== -->
+  <div class="view" id="viewEdit">
+    <div class="edit-header">
+      <button class="back-btn" onclick="showList()">←</button>
+      <span class="edit-title" id="editTitle">Edit Workspace</span>
+    </div>
+
+    <div class="edit-body">
+      <div class="field-group">
+        <div class="field-label">📛 Workspace Name</div>
+        <input type="text" id="wsName" placeholder="e.g. Outbounder, Client X, Project Alpha" />
+      </div>
+
+      <hr class="divider" />
+
+      <div class="field-group">
+        <div class="field-label">🔴 GetSales.io API Key</div>
+        <div class="field-help">Per-workspace key for LinkedIn outreach. Each workspace can connect to a different GetSales account.</div>
+        <input type="password" id="wsGetsalesKey" placeholder="Enter GetSales API key for this workspace" />
+        <button class="test-btn" onclick="testGetsales()">Test GetSales Connection</button>
+      </div>
+
+      <hr class="divider" />
+
+      <div class="field-group">
+        <div class="field-label">🧠 Agent Memory</div>
+        <div class="field-help">Company info, brand voice, product details, ICP, writing rules — anything the agent should always know in this workspace.</div>
+        <div class="template-chips">
+          <span class="chip" onclick="insertTemplate('company')">Company Info</span>
+          <span class="chip" onclick="insertTemplate('brand')">Brand Voice</span>
+          <span class="chip" onclick="insertTemplate('product')">Product Details</span>
+          <span class="chip" onclick="insertTemplate('icp')">ICP / Target</span>
+          <span class="chip" onclick="insertTemplate('custom')">Custom Rules</span>
+        </div>
+        <textarea class="memory-textarea" id="wsMemory"
+          placeholder="Example:
+
+Company: Outbounder — AI sales engagement
+Industry: B2B SaaS
+Tone: Professional but approachable
+Products: Sales Navigator, AI email sequences, LinkedIn automation
+ICP: VP Sales, CRO at 50-500 employee B2B companies"
+          oninput="updateCharCount()"
+        ></textarea>
+        <div class="char-count" id="charCount">0 / 50,000 characters</div>
+      </div>
+
+      <div class="status-msg" id="editStatus"></div>
+    </div>
+
+    <div class="edit-footer">
+      <button class="primary" onclick="saveWorkspace()">💾 Save Workspace</button>
+      <button class="secondary" onclick="showList()">Cancel</button>
+    </div>
+  </div>
+
+  <script>
+    var workspaces = [];
+    var activeId = '';
+    var editingId = null; // null = creating new
+    var MAX_CHARS = 50000;
+
+    // ---- INIT ----
+    google.script.run
+      .withSuccessHandler(function(data) {
+        workspaces = data.workspaces || [];
+        activeId = data.activeId || '';
+        renderList();
+      })
+      .getWorkspaces();
+
+    // ---- LIST RENDERING ----
+    function renderList() {
+      var container = document.getElementById('workspaceList');
+
+      if (workspaces.length === 0) {
+        container.innerHTML =
+          '<div style="text-align: center; padding: 40px 20px; color: #8899aa;">' +
+            '<div style="font-size: 32px; margin-bottom: 12px;">🗂</div>' +
+            '<div style="font-weight: 500; margin-bottom: 4px;">No workspaces yet</div>' +
+            '<div style="font-size: 12px;">Create one to store your company context and API keys.</div>' +
+          '</div>';
+        return;
+      }
+
+      container.innerHTML = workspaces.map(function(ws) {
+        var isActive = ws.id === activeId;
+        var cls = 'ws-card' + (isActive ? ' active-ws' : '');
+        var hasKey = ws.hasGetsalesKey ? '🔴 GetSales' : '';
+        var hasMemory = ws.memoryLength > 0 ? '🧠 ' + formatSize(ws.memoryLength) : '';
+        var metaParts = [hasKey, hasMemory].filter(Boolean);
+
+        return '<div class="' + cls + '" onclick="switchWorkspace(\'' + ws.id + '\')">' +
+          '<div class="ws-actions">' +
+            '<button class="ws-action-btn" onclick="event.stopPropagation(); editWorkspace(\'' + ws.id + '\')" title="Edit">✎</button>' +
+            (workspaces.length > 1 ? '<button class="ws-action-btn delete" onclick="event.stopPropagation(); deleteWorkspace(\'' + ws.id + '\')" title="Delete">✕</button>' : '') +
+          '</div>' +
+          '<div class="ws-card-top">' +
+            '<div class="ws-icon">' + (isActive ? '⚡' : '📁') + '</div>' +
+            '<div class="ws-name">' + escapeHtml(ws.name) + '</div>' +
+            (isActive ? '<span class="ws-badge">Active</span>' : '') +
+          '</div>' +
+          (metaParts.length > 0 ?
+            '<div class="ws-meta">' +
+              metaParts.map(function(m) { return '<span class="ws-meta-item">' + m + '</span>'; }).join('') +
+            '</div>' : '') +
+        '</div>';
+      }).join('');
+    }
+
+    // ---- SWITCH ----
+    function switchWorkspace(id) {
+      if (id === activeId) return; // Already active
+      google.script.run
+        .withSuccessHandler(function() {
+          activeId = id;
+          renderList();
+        })
+        .switchWorkspace(id);
+    }
+
+    // ---- CREATE NEW ----
+    function createNew() {
+      editingId = null;
+      document.getElementById('editTitle').textContent = 'New Workspace';
+      document.getElementById('wsName').value = '';
+      document.getElementById('wsGetsalesKey').value = '';
+      document.getElementById('wsMemory').value = '';
+      updateCharCount();
+      hideStatus();
+      showView('viewEdit');
+    }
+
+    // ---- EDIT ----
+    function editWorkspace(id) {
+      editingId = id;
+      document.getElementById('editTitle').textContent = 'Edit Workspace';
+      hideStatus();
+
+      // Load full workspace details
+      google.script.run
+        .withSuccessHandler(function(data) {
+          document.getElementById('wsName').value = data.name || '';
+          document.getElementById('wsGetsalesKey').value = data.getsalesApiKey || '';
+          document.getElementById('wsMemory').value = data.memory || '';
+          updateCharCount();
+          showView('viewEdit');
+        })
+        .getWorkspaceDetails(id);
+    }
+
+    // ---- SAVE ----
+    function saveWorkspace() {
+      var name = document.getElementById('wsName').value.trim();
+      if (!name) {
+        showStatus('error', 'Workspace name is required.');
+        return;
+      }
+
+      var memoryText = document.getElementById('wsMemory').value;
+      if (memoryText.length > MAX_CHARS) {
+        showStatus('error', 'Memory exceeds ' + MAX_CHARS.toLocaleString() + ' characters.');
+        return;
+      }
+
+      var data = {
+        name: name,
+        getsalesApiKey: document.getElementById('wsGetsalesKey').value.trim(),
+        memory: memoryText,
+      };
+
+      showStatus('', 'Saving...');
+
+      if (editingId) {
+        // Update existing
+        google.script.run
+          .withSuccessHandler(function(result) {
+            if (result.success) {
+              // Update local state
+              for (var i = 0; i < workspaces.length; i++) {
+                if (workspaces[i].id === editingId) {
+                  workspaces[i].name = name;
+                  workspaces[i].hasGetsalesKey = !!data.getsalesApiKey && data.getsalesApiKey !== '••••••••';
+                  workspaces[i].memoryLength = memoryText.length;
+                  break;
+                }
+              }
+              renderList();
+              showList();
+            } else {
+              showStatus('error', 'Save failed: ' + (result.error || 'Unknown'));
+            }
+          })
+          .withFailureHandler(function(err) {
+            showStatus('error', 'Save failed: ' + err.message);
+          })
+          .saveWorkspaceDetails(editingId, data);
+      } else {
+        // Create new
+        google.script.run
+          .withSuccessHandler(function(result) {
+            if (result.success) {
+              workspaces.push({
+                id: result.id,
+                name: name,
+                hasGetsalesKey: !!data.getsalesApiKey,
+                memoryLength: memoryText.length,
+              });
+              activeId = result.id;
+              renderList();
+              showList();
+            } else {
+              showStatus('error', 'Create failed: ' + (result.error || 'Unknown'));
+            }
+          })
+          .withFailureHandler(function(err) {
+            showStatus('error', 'Create failed: ' + err.message);
+          })
+          .createWorkspace(data);
+      }
+    }
+
+    // ---- DELETE ----
+    function deleteWorkspace(id) {
+      var ws = workspaces.find(function(w) { return w.id === id; });
+      var name = ws ? ws.name : 'this workspace';
+      if (!confirm('Delete "' + name + '"? This will remove its memory and GetSales key.')) return;
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result.success) {
+            workspaces = workspaces.filter(function(w) { return w.id !== id; });
+            if (activeId === id && workspaces.length > 0) {
+              activeId = workspaces[0].id;
+            }
+            renderList();
+          }
+        })
+        .deleteWorkspace(id);
+    }
+
+    // ---- TEST GETSALES ----
+    function testGetsales() {
+      var key = document.getElementById('wsGetsalesKey').value.trim();
+      if (!key || key === '••••••••') {
+        showStatus('error', 'Enter a GetSales API key first.');
+        return;
+      }
+      showStatus('', 'Testing GetSales connection...');
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result.success) showStatus('success', '🔴 ' + result.message);
+          else showStatus('error', '🔴 ' + result.message);
+        })
+        .withFailureHandler(function(err) {
+          showStatus('error', 'Test failed: ' + err.message);
+        })
+        .testGetsalesKeyDirect(key);
+    }
+
+    // ---- TEMPLATES ----
+    function insertTemplate(type) {
+      var templates = {
+        company: '\n\n## Company Overview\nName: \nIndustry: \nFounded: \nHeadquarters: \nEmployees: \nWebsite: \nOne-liner: \n',
+        brand: '\n\n## Brand Voice & Tone\n- Personality: \n- Tone: (e.g., professional, friendly, authoritative)\n- Do: \n- Don\'t: \n- Key phrases: \n- Words to avoid: \n',
+        product: '\n\n## Products / Services\nProduct 1:\n  - Name: \n  - Description: \n  - Key features: \n  - Pricing: \n  - Value prop: \n',
+        icp: '\n\n## Ideal Customer Profile (ICP)\n- Titles: (e.g., VP Sales, CRO)\n- Company size: (e.g., 50-500 employees)\n- Industries: \n- Pain points: \n- Buying triggers: \n',
+        custom: '\n\n## Custom Rules\n- \n- \n- \n',
+      };
+      var ta = document.getElementById('wsMemory');
+      ta.value += templates[type] || '';
+      ta.focus();
+      ta.scrollTop = ta.scrollHeight;
+      updateCharCount();
+    }
+
+    // ---- HELPERS ----
+    function showView(id) {
+      document.querySelectorAll('.view').forEach(function(v) { v.classList.remove('active'); });
+      document.getElementById(id).classList.add('active');
+    }
+    function showList() { showView('viewList'); }
+
+    function updateCharCount() {
+      var len = document.getElementById('wsMemory').value.length;
+      var el = document.getElementById('charCount');
+      el.textContent = len.toLocaleString() + ' / ' + MAX_CHARS.toLocaleString() + ' characters';
+      el.className = 'char-count' + (len > MAX_CHARS * 0.9 ? ' warning' : '');
+    }
+
+    function showStatus(type, msg) {
+      var el = document.getElementById('editStatus');
+      el.className = 'status-msg ' + type;
+      el.textContent = msg;
+      el.style.display = msg ? 'block' : 'none';
+    }
+    function hideStatus() {
+      document.getElementById('editStatus').style.display = 'none';
+    }
+
+    function formatSize(chars) {
+      if (chars < 1000) return chars + ' chars';
+      return Math.round(chars / 1000) + 'K chars';
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+  </script>
+</body>
+</html>

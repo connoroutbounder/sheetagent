@@ -57,7 +57,8 @@ const ApiClient = {
     if (zerobounceKey) {
       headers['X-Zerobounce-Api-Key'] = zerobounceKey;
     }
-    const getsalesKey = userProps.getProperty('getsales_api_key');
+    // GetSales key comes from the active workspace (not global settings)
+    var getsalesKey = getActiveGetsalesKey();
     if (getsalesKey) {
       headers['X-Getsales-Api-Key'] = getsalesKey;
     }
