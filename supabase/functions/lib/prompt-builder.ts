@@ -105,13 +105,19 @@ Use this when the user wants to process/enrich/transform rows already in the she
 
 **FORMAT 2: bulk_write** — For IMPORTING external data INTO the sheet.
 Use this when the user wants to pull data from an external source (like an Apollo list) and populate the sheet.
-The data will be written starting at the FIRST EMPTY ROW after existing data.
+The data will be written starting at the FIRST EMPTY ROW after existing data on the TARGET sheet.
+
+**IMPORTANT: sheetName parameter**
+- If the user says "post to Sheet2" or "add to [sheet name]", include "sheetName": "Sheet2" (or the exact sheet name).
+- If no sheet is specified, omit sheetName and data writes to the active sheet.
+- If the target sheet doesn't exist, it will be created automatically.
 
 **For Apollo list imports (recommended for large lists):**
 After calling apollo_get_list_entries, the full dataset is cached server-side. You just need to specify which fields go in which columns:
 \`\`\`bulk_write
 {
   "source": "apollo_list",
+  "sheetName": "Sheet2",
   "columns": ["A", "B"],
   "fields": ["name", "domain"]
 }
@@ -122,6 +128,7 @@ Available fields for contact lists: name, email, title, company, domain
 **For small/manual datasets (non-Apollo):**
 \`\`\`bulk_write
 {
+  "sheetName": "Sheet2",
   "columns": ["A", "B"],
   "rows": [
     ["Company Name 1", "website1.com"],
@@ -141,7 +148,8 @@ IMPORTANT FOR bulk_write:
 - You have access to Apollo tools during this chat. CALL THEM to fetch data before writing.
 - When the user says "pull from list X", call apollo_get_list_entries({ list_name: "X" }) to get the data.
 - After the tool returns, respond with a bulk_write block. For Apollo data, ALWAYS use source: "apollo_list" with a fields mapping — do NOT try to enumerate all rows yourself. The server will populate rows from the cached data.
-- The user's sheet may already have data — bulk_write automatically appends after the last row.
+- The user's sheet may already have data — bulk_write automatically appends after the last row ON THE TARGET SHEET.
+- If the user mentions a specific sheet (e.g. "post to Sheet2", "add to the Employees tab"), ALWAYS include "sheetName" in the bulk_write block.
 - Match the columns the user specifies (e.g. "column A and B" → columns: ["A", "B"]).
 - Map the right fields to the right columns (e.g. "names and websites" → fields: ["name", "domain"]).
 

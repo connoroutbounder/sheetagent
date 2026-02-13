@@ -129,6 +129,7 @@ export interface BulkWriteData {
   columns: string[];     // Column letters, e.g. ["A", "B"]
   rows: string[][];      // Array of row data, e.g. [["McDonald's", "mcdonalds.com"], ...]
   startRow?: number;     // Optional: explicit start row. Default: first empty row after existing data
+  sheetName?: string;    // Optional: target sheet name. Default: active sheet. Auto-creates if missing.
 }
 
 export interface ChatResponse {

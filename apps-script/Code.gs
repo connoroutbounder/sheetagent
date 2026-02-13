@@ -354,7 +354,18 @@ function deleteAgent(agentId) {
  * @returns {Object} { success, rowsWritten, startRow }
  */
 function writeBulkRows(bulkWrite) {
-  var sheet = SpreadsheetApp.getActiveSheet();
+  // Support writing to a specific sheet by name, or fall back to active sheet
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet;
+  if (bulkWrite.sheetName) {
+    sheet = ss.getSheetByName(bulkWrite.sheetName);
+    if (!sheet) {
+      // Create the sheet if it doesn't exist
+      sheet = ss.insertSheet(bulkWrite.sheetName);
+    }
+  } else {
+    sheet = ss.getActiveSheet();
+  }
   var columns = bulkWrite.columns || ['A', 'B'];
   var rows = bulkWrite.rows || [];
   

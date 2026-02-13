@@ -169,6 +169,7 @@ async function handleChat(request: ChatRequest, user: any): Promise<ChatResponse
             fields.map((f: string) => entry[f] || '')
           );
           // Clean up non-standard fields before sending to sidebar
+          // (preserve sheetName — it's passed to writeBulkRows)
           delete bulkWrite.source;
           delete bulkWrite.fields;
 

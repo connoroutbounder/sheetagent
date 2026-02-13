@@ -719,12 +719,14 @@
 
       // Agent returned bulk data to write directly to the sheet
       if (response.bulkWrite && response.bulkWrite.rows && response.bulkWrite.rows.length > 0) {
-        addMessage('system', '📥 Writing ' + response.bulkWrite.rows.length + ' rows to sheet...');
+        var targetSheet = response.bulkWrite.sheetName ? ' to "' + response.bulkWrite.sheetName + '"' : '';
+        addMessage('system', '📥 Writing ' + response.bulkWrite.rows.length + ' rows' + targetSheet + '...');
         google.script.run
           .withSuccessHandler(function(result) {
             if (result && result.success) {
+              var sheetNote = response.bulkWrite.sheetName ? ' on "' + response.bulkWrite.sheetName + '"' : '';
               addMessage('agent', 
-                '✓ Wrote <strong>' + result.rowsWritten + ' rows</strong> starting at row ' + result.startRow + '. Check your sheet!'
+                '✓ Wrote <strong>' + result.rowsWritten + ' rows</strong> starting at row ' + result.startRow + sheetNote + '. Check your sheet!'
               );
               refreshContext();
             } else {
