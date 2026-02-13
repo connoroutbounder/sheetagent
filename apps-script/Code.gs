@@ -95,15 +95,25 @@ function _getActiveWorkspaceId() {
       list.push({ id: newId, name: 'Default', createdAt: new Date().toISOString() });
       props.setProperty('workspaces_list', JSON.stringify(list));
       
-      // Migrate any existing memory from old DocumentProperties format
-      _migrateOldMemory(newId);
-      // Migrate old global GetSales key if present
-      _migrateOldGetsalesKey(newId);
+      // Migrate any existing data (non-critical — wrap in try/catch)
+      try { _migrateOldMemory(newId); } catch(e) { Logger.log('Memory migration skipped: ' + e); }
+      try { _migrateOldGetsalesKey(newId); } catch(e) { Logger.log('GetSales key migration skipped: ' + e); }
       
       activeId = newId;
     } else {
       activeId = list[0].id;
     }
+    props.setProperty('active_workspace_id', activeId);
+  }
+  
+  // Verify the active workspace still exists in the list
+  var currentList = _getWorkspaceList();
+  var found = false;
+  for (var i = 0; i < currentList.length; i++) {
+    if (currentList[i].id === activeId) { found = true; break; }
+  }
+  if (!found && currentList.length > 0) {
+    activeId = currentList[0].id;
     props.setProperty('active_workspace_id', activeId);
   }
   
@@ -220,26 +230,29 @@ function getWorkspaces() {
   var list = _getWorkspaceList();
   var props = PropertiesService.getUserProperties();
   
-  var workspaces = list.map(function(ws) {
+  var result = [];
+  for (var idx = 0; idx < list.length; idx++) {
+    var ws = list[idx];
     var memoryLen = 0;
-    var count = parseInt(props.getProperty('ws_' + ws.id + '_memory_chunks') || '0');
-    if (count > 0) {
-      // Approximate memory length from chunk count
-      for (var i = 0; i < count; i++) {
-        var chunk = props.getProperty('ws_' + ws.id + '_memory_' + i);
-        if (chunk) memoryLen += chunk.length;
+    try {
+      var count = parseInt(props.getProperty('ws_' + ws.id + '_memory_chunks') || '0');
+      if (count > 0) {
+        for (var i = 0; i < count; i++) {
+          var chunk = props.getProperty('ws_' + ws.id + '_memory_' + i);
+          if (chunk) memoryLen += chunk.length;
+        }
       }
-    }
+    } catch(e) { /* ignore */ }
     
-    return {
-      id: ws.id,
-      name: ws.name,
+    result.push({
+      id: String(ws.id),
+      name: String(ws.name || 'Untitled'),
       hasGetsalesKey: !!props.getProperty('ws_' + ws.id + '_getsales_key'),
       memoryLength: memoryLen,
-    };
-  });
+    });
+  }
   
-  return { workspaces: workspaces, activeId: activeId };
+  return { workspaces: result, activeId: String(activeId) };
 }
 
 /**
