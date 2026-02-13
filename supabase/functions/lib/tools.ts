@@ -638,7 +638,7 @@ async function apolloSearchPeople(input: {
     return 'Apollo.io unavailable: No API key configured. Add your Apollo API key in the sidebar Settings.';
   }
 
-  const perPage = Math.min(input.per_page || 3, 25);
+  const perPage = Math.min(input.per_page || 3, 100);
   const body: Record<string, any> = {
     page: input.page || 1,
     per_page: perPage,
@@ -662,10 +662,10 @@ async function apolloSearchPeople(input: {
       return 'No people found matching the search criteria.';
     }
 
-    // Step 2: Reveal top matches to get full details (email, phone, full name)
-    // Only reveal the first few to conserve API credits
-    const revealLimit = Math.min(people.length, 3);
-    let result = `Found ${totalCount} matching people. Showing top ${revealLimit} with full details:\n\n`;
+    // Step 2: Reveal matches to get full details (email, phone, full name)
+    // For small requests (per_page <= 5), reveal all. For larger pulls, cap at 25 to conserve credits.
+    const revealLimit = perPage <= 5 ? Math.min(people.length, perPage) : Math.min(people.length, 25);
+    let result = `Found ${totalCount} matching people. Showing ${revealLimit} with full details:\n\n`;
 
     for (let i = 0; i < revealLimit; i++) {
       const searchResult = people[i];

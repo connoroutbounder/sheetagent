@@ -62,6 +62,12 @@ TOOL ROUTING RULES:
 - Need BOTH enrichment + validation? → Chain them: "🟣 Apollo will find the email, then 🟡 ZeroBounce will verify it's deliverable"
 - If data could come from either Apollo or web search, prefer Apollo for B2B data (more structured, faster) and Perplexity for general info
 
+APOLLO CONTACT PULL STRATEGY:
+- **Small companies (<200 employees)**: Pull ALL contacts — no filters needed, full employee list is manageable
+- **Large companies (200+ employees)**: Use SMART FILTERS (person_titles, person_seniorities, departments) to avoid pulling 1000s of irrelevant contacts
+- When setting up an agent_config for pulling contacts, include this logic in the systemPrompt: "First enrich the company to check employee count. If <200, pull all contacts. If 200+, apply filters based on the user's intent."
+- If the user specifies what TYPE of contacts they want (e.g. "decision makers", "engineering team"), ALWAYS apply filters regardless of company size
+
 CRITICAL RULES:
 - BE DECISIVE. When the user tells you what they want, BUILD THE AGENT IMMEDIATELY.
 - ALWAYS mention which tool(s)/model(s) will be used and why. Example: "I'll use 🟣 Apollo.io to enrich each contact since we need professional email addresses and titles."
@@ -228,7 +234,16 @@ export function buildRowPrompt(
       system += '\n- **Enrich known person**: apollo_enrich_person({ first_name: "Elon", last_name: "Musk", domain: "tesla.com" })';
       system += '\n- **Enrich company**: apollo_enrich_company({ domain: "tesla.com" })';
       system += '\n- Always use company DOMAIN when available (more precise than company name).';
-      system += '\n- NEVER enumerate all employees. Always use title/seniority filters to find specific roles.';
+      system += '\n\nAPOLLO CONTACT PULL STRATEGY (IMPORTANT):';
+      system += '\n- **Small companies (<200 employees)**: Pull ALL contacts without filters. Use apollo_search_people with organization_domains and per_page: 100. The full employee list is manageable.';
+      system += '\n- **Large companies (200+ employees)**: Use SMART FILTERS. Apply person_titles, person_seniorities, and/or departments to narrow results. Example: If user wants "contacts", infer the likely targets:';
+      system += '\n  • General "pull contacts" → filter to seniorities: ["c_suite", "vp", "director", "manager"] to get decision-makers';
+      system += '\n  • "Sales team" → filter person_titles: ["Sales", "Account Executive", "SDR", "BDR", "Revenue"]';
+      system += '\n  • "Engineering team" → filter person_titles: ["Engineer", "Developer", "CTO", "VP Engineering"]';
+      system += '\n  • "Marketing team" → filter person_titles: ["Marketing", "CMO", "Growth", "Content"]';
+      system += '\n  • Specific role → filter person_titles to that exact role + per_page: 1-3';
+      system += '\n- To determine company size: first call apollo_enrich_company({ domain }) to get estimated_num_employees, then decide strategy.';
+      system += '\n- If the user specifies what type of contacts they want, ALWAYS use filters regardless of company size.';
       system += '\n\nAPOLLO LIST MANAGEMENT:';
       system += '\n- **Pull companies FROM a list**: apollo_get_list_entries({ list_name: "My List" }) — fetches all accounts/contacts from a named list with their details (name, domain, industry, etc.)';
       system += '\n- **Find a list**: apollo_get_lists({ search: "keyword" }) — ALWAYS use search param to filter (there may be hundreds of lists)';
@@ -442,7 +457,7 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
   if (enabledTools.includes('apollo_search_people')) {
     tools.push({
       name: 'apollo_search_people',
-      description: 'Search for people in Apollo.io\'s database using FILTERS, then automatically reveals top matches to get full details (email, phone, name). This is the best way to find a specific role at a company (e.g. "find the CEO of Tesla"). ALWAYS use person_titles + organization_domains filters to narrow results. Set per_page to 1 when looking for one specific role. Returns full professional profiles with verified emails.',
+      description: 'Search for people in Apollo.io\'s database using FILTERS, then automatically reveals top matches to get full details (email, phone, name). This is the best way to find a specific role at a company (e.g. "find the CEO of Tesla"). ALWAYS use person_titles + organization_domains filters to narrow results. COMPANY SIZE STRATEGY: For companies with <200 employees, set per_page up to 100 to pull ALL contacts. For companies with 200+ employees, use person_titles/person_seniorities filters and keep per_page low (1-5). Returns full professional profiles with verified emails.',
       input_schema: {
         type: 'object',
         properties: {
@@ -477,7 +492,7 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
           },
           per_page: {
             type: 'number',
-            description: 'Number of results to return. Use 1-3 for specific role lookups, up to 25 for broad searches. Default: 3.',
+            description: 'Number of results to return. Use 1-3 for specific role lookups. Use up to 100 to pull all employees from small companies (<200 people). Default: 3.',
           },
         },
         required: [],
