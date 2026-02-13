@@ -633,28 +633,117 @@ async function apolloSearchPeople(input: {
   per_page?: number;
   page?: number;
   q_keywords?: string;
+  pull_all?: boolean;  // If true, auto-paginate and cache ALL results (no enrichment credits)
 }): Promise<string> {
   if (!getApolloApiKey()) {
     return 'Apollo.io unavailable: No API key configured. Add your Apollo API key in the sidebar Settings.';
   }
 
   const perPage = Math.min(input.per_page || 3, 100);
-  const body: Record<string, any> = {
-    page: input.page || 1,
+  // Detect bulk pull mode: either explicit pull_all flag, or high per_page (>=25)
+  const isBulkPull = input.pull_all === true || perPage >= 25;
+
+  const baseBody: Record<string, any> = {
     per_page: perPage,
   };
 
-  if (input.person_titles) body.person_titles = input.person_titles;
-  if (input.organization_domains) body.q_organization_domains = input.organization_domains.map(stripToDomain).join('\n');
-  if (input.organization_names) body.organization_names = input.organization_names;
-  if (input.person_locations) body.person_locations = input.person_locations;
-  if (input.person_seniorities) body.person_seniorities = input.person_seniorities;
-  if (input.contact_email_status) body.contact_email_status = input.contact_email_status;
-  if (input.q_keywords) body.q_keywords = input.q_keywords;
+  if (input.person_titles) baseBody.person_titles = input.person_titles;
+  if (input.organization_domains) baseBody.q_organization_domains = input.organization_domains.map(stripToDomain).join('\n');
+  if (input.organization_names) baseBody.organization_names = input.organization_names;
+  if (input.person_locations) baseBody.person_locations = input.person_locations;
+  if (input.person_seniorities) baseBody.person_seniorities = input.person_seniorities;
+  if (input.contact_email_status) baseBody.contact_email_status = input.contact_email_status;
+  if (input.q_keywords) baseBody.q_keywords = input.q_keywords;
 
   try {
-    // Step 1: Search (returns obfuscated results with IDs)
-    const data = await apolloRequest('/api/v1/mixed_people/api_search', body);
+    if (isBulkPull) {
+      // ===== BULK PULL MODE =====
+      // Auto-paginate through ALL results, extract basic info (no reveal/enrichment credits used),
+      // cache the full dataset for bulk_write.
+      const MAX_ENTRIES = 10000;
+      const TIME_LIMIT_MS = 120_000;
+      const startTime = Date.now();
+      const allEntries: Array<Record<string, string>> = [];
+      let totalCount = 0;
+      let page = 1;
+      let timedOut = false;
+
+      while (allEntries.length < MAX_ENTRIES) {
+        if (Date.now() - startTime > TIME_LIMIT_MS) { timedOut = true; break; }
+
+        const data = await apolloRequest('/api/v1/mixed_people/api_search', {
+          ...baseBody,
+          per_page: 100,  // Always max per page for bulk
+          page,
+        });
+
+        const people = data.people || [];
+        if (page === 1) {
+          totalCount = data.total_entries || data.pagination?.total_entries || 0;
+        }
+
+        if (people.length === 0) break;
+
+        for (const p of people) {
+          allEntries.push({
+            name: [p.first_name, p.last_name].filter(Boolean).join(' ') || 'Unknown',
+            first_name: p.first_name || '',
+            last_name: p.last_name || '',
+            title: p.title || '',
+            company: p.organization?.name || '',
+            domain: p.organization?.primary_domain || '',
+            linkedin: p.linkedin_url || '',
+            // Note: email is obfuscated in search results — no credits used
+            email: p.email || '',
+          });
+        }
+
+        if (people.length < 100) break;
+        page++;
+      }
+
+      if (allEntries.length === 0) {
+        return 'No people found matching the search criteria.';
+      }
+
+      // Cache for bulk_write (same mechanism as apolloGetListEntries)
+      const companyLabel = input.organization_domains?.[0] || input.organization_names?.[0] || 'search';
+      _cachedListEntries = {
+        listName: `search_${companyLabel}`,
+        type: 'contacts',
+        entries: allEntries,
+        totalCount: totalCount || allEntries.length,
+      };
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      let summary = `✅ Fetched ALL ${allEntries.length} contacts`;
+      if (timedOut) {
+        summary += ` (${allEntries.length} of ${totalCount} before time limit)`;
+      } else if (totalCount > allEntries.length) {
+        summary += ` (${totalCount} total, capped at ${MAX_ENTRIES})`;
+      }
+      summary += ` in ${elapsed}s.\n\n`;
+
+      // Show first 5 samples
+      const sampleCount = Math.min(5, allEntries.length);
+      summary += `Sample contacts (${sampleCount} of ${allEntries.length}):\n`;
+      for (let i = 0; i < sampleCount; i++) {
+        const e = allEntries[i];
+        summary += `• ${e.name}`;
+        if (e.title) summary += ` — ${e.title}`;
+        if (e.linkedin) summary += ` | LinkedIn: ${e.linkedin}`;
+        summary += '\n';
+      }
+
+      summary += `\nAvailable fields: name, first_name, last_name, title, company, domain, linkedin, email`;
+      summary += `\n\n[Dataset cached — respond with bulk_write using source: "apollo_search" and a fields mapping to write all ${allEntries.length} entries to the sheet]`;
+
+      return summary;
+    }
+
+    // ===== TARGETED SEARCH MODE =====
+    // Small per_page (1-24): search + reveal for full details including verified email
+    const data = await apolloRequest('/api/v1/mixed_people/api_search', { ...baseBody, page: input.page || 1 });
     const people = data.people || [];
     const totalCount = data.total_entries || data.pagination?.total_entries || people.length;
 
@@ -662,9 +751,8 @@ async function apolloSearchPeople(input: {
       return 'No people found matching the search criteria.';
     }
 
-    // Step 2: Reveal matches to get full details (email, phone, full name)
-    // For small requests (per_page <= 5), reveal all. For larger pulls, cap at 25 to conserve credits.
-    const revealLimit = perPage <= 5 ? Math.min(people.length, perPage) : Math.min(people.length, 25);
+    // Reveal matches to get full details (email, phone, full name)
+    const revealLimit = Math.min(people.length, perPage);
     let result = `Found ${totalCount} matching people. Showing ${revealLimit} with full details:\n\n`;
 
     for (let i = 0; i < revealLimit; i++) {
@@ -672,7 +760,6 @@ async function apolloSearchPeople(input: {
       const personId = searchResult.id;
 
       if (personId) {
-        // Reveal to get full data including email
         const revealed = await apolloRevealPerson(personId);
         if (revealed) {
           result += formatApolloPerson(revealed) + '\n---\n';

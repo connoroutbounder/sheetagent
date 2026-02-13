@@ -147,8 +147,8 @@ async function handleChat(request: ChatRequest, user: any): Promise<ChatResponse
 
   // ---------------------------------------------------------------
   // Check for bulk_write block (import data to sheet)
-  // Two modes:
-  //   1. source: "apollo_list" → populate rows from cached Apollo data
+  // Three modes:
+  //   1. source: "apollo_list" or "apollo_search" → populate rows from cached Apollo data
   //   2. Direct rows → use as-is (small datasets)
   // ---------------------------------------------------------------
   const bulkWriteMatch = finalTextContent.match(/```bulk_write\s*\n?([\s\S]*?)```/);
@@ -157,13 +157,13 @@ async function handleChat(request: ChatRequest, user: any): Promise<ChatResponse
       const bulkWrite = JSON.parse(bulkWriteMatch[1]);
       const cleanMessage = finalTextContent.replace(/```bulk_write[\s\S]*?```/g, '').trim();
 
-      // If Claude used the lightweight "source: apollo_list" format,
-      // fill in rows from the cached list entries
-      if (bulkWrite.source === 'apollo_list') {
+      // If Claude used a cached source format (apollo_list OR apollo_search),
+      // fill in rows from the cached entries
+      if (bulkWrite.source === 'apollo_list' || bulkWrite.source === 'apollo_search') {
         const cached = getCachedListEntries();
         if (cached && cached.entries.length > 0) {
           const fields = bulkWrite.fields || (
-            cached.type === 'accounts' ? ['name', 'domain'] : ['name', 'email']
+            cached.type === 'accounts' ? ['name', 'domain'] : ['name', 'title', 'linkedin']
           );
           bulkWrite.rows = cached.entries.map((entry: Record<string, string>) =>
             fields.map((f: string) => entry[f] || '')
@@ -172,14 +172,15 @@ async function handleChat(request: ChatRequest, user: any): Promise<ChatResponse
           // (preserve sheetName — it's passed to writeBulkRows)
           delete bulkWrite.source;
           delete bulkWrite.fields;
+          delete bulkWrite.list_name;
 
           return {
-            message: cleanMessage || `Writing ${bulkWrite.rows.length} entries from "${cached.listName}" to your sheet...`,
+            message: cleanMessage || `Writing ${bulkWrite.rows.length} entries to your sheet...`,
             bulkWrite,
           };
         } else {
           return {
-            message: 'No cached data available. The Apollo list may have been empty or the fetch failed.',
+            message: 'No cached data available. The Apollo search/list may have been empty or the fetch failed.',
           };
         }
       }
@@ -195,22 +196,21 @@ async function handleChat(request: ChatRequest, user: any): Promise<ChatResponse
   }
 
   // ---------------------------------------------------------------
-  // Fallback: if apollo_get_list_entries was called and cached data
-  // exists but Claude didn't produce a bulk_write block, check if
-  // the user's intent was to import data and auto-construct bulk_write.
+  // Fallback: if any Apollo tool was called and cached data exists
+  // but Claude didn't produce a bulk_write block, auto-construct one.
   // ---------------------------------------------------------------
   const cached = getCachedListEntries();
   if (cached && cached.entries.length > 0) {
-    // Claude fetched the list but didn't produce a proper bulk_write.
-    // Auto-construct one with default column mapping.
-    const defaultFields = cached.type === 'accounts' ? ['name', 'domain'] : ['name', 'email'];
-    const columns = defaultFields.length >= 2 ? ['A', 'B'] : ['A'];
+    const defaultFields = cached.type === 'accounts'
+      ? ['name', 'domain']
+      : ['name', 'title', 'linkedin'];
+    const columns = defaultFields.map((_f, i) => String.fromCharCode(65 + i)); // A, B, C...
     const rows = cached.entries.map((entry: Record<string, string>) =>
       defaultFields.map((f: string) => entry[f] || '')
     );
 
     return {
-      message: finalTextContent || `Fetched ${rows.length} entries from "${cached.listName}". Writing to columns ${columns.join(', ')}...`,
+      message: finalTextContent || `Fetched ${rows.length} entries. Writing to columns ${columns.join(', ')}...`,
       bulkWrite: { columns, rows },
     };
   }

@@ -146,6 +146,7 @@ Available fields for contact lists: name, email, title, company, domain, linkedi
 WHEN TO USE WHICH FORMAT:
 - "Find CEO emails for each company" → agent_config (processes existing rows)
 - "Pull companies from my Apollo list" → Call apollo_get_list_entries tool, then bulk_write with source: "apollo_list"
+- "Pull all employees from CircuitHub" → Call apollo_search_people with pull_all: true + organization_domains, then bulk_write with source: "apollo_search"
 - "Add these companies to an Apollo list" → agent_config with apollo_add_account_to_list tool
 - "Enrich the website for each company" → agent_config (processes existing rows)
 - "Import contacts from Apollo list X into column A and B" → Call apollo_get_list_entries, then bulk_write with source: "apollo_list"
@@ -153,11 +154,13 @@ WHEN TO USE WHICH FORMAT:
 IMPORTANT FOR bulk_write:
 - You have access to Apollo tools during this chat. CALL THEM to fetch data before writing.
 - When the user says "pull from list X", call apollo_get_list_entries({ list_name: "X" }) to get the data.
-- After the tool returns, respond with a bulk_write block. For Apollo data, ALWAYS use source: "apollo_list" with a fields mapping — do NOT try to enumerate all rows yourself. The server will populate rows from the cached data.
+- When the user says "pull all employees from X", call apollo_search_people with pull_all: true + organization_domains: ["x.com"]. This auto-paginates to get ALL contacts.
+- After the tool returns, respond with a bulk_write block. For Apollo data, use source: "apollo_list" (for list pulls) or source: "apollo_search" (for search pulls) with a fields mapping — do NOT try to enumerate all rows yourself. The server will populate rows from the cached data.
 - The user's sheet may already have data — bulk_write automatically appends after the last row ON THE TARGET SHEET.
 - If the user mentions a specific sheet (e.g. "post to Sheet2", "add to the Employees tab"), ALWAYS include "sheetName" in the bulk_write block.
 - Match the columns the user specifies (e.g. "column A and B" → columns: ["A", "B"]).
 - Map the right fields to the right columns (e.g. "names and websites" → fields: ["name", "domain"]).
+- For contact search pulls, available fields: name, first_name, last_name, title, company, domain, linkedin, email.
 
 TOOL NAME REFERENCE:
 - Perplexity web tools: "search", "web_scrape", "web_research"
@@ -235,7 +238,7 @@ export function buildRowPrompt(
       system += '\n- **Enrich company**: apollo_enrich_company({ domain: "tesla.com" })';
       system += '\n- Always use company DOMAIN when available (more precise than company name).';
       system += '\n\nAPOLLO CONTACT PULL STRATEGY (IMPORTANT):';
-      system += '\n- **Small companies (<200 employees)**: Pull ALL contacts without filters. Use apollo_search_people with organization_domains and per_page: 100. The full employee list is manageable.';
+      system += '\n- **Small companies (<200 employees)**: Use apollo_search_people with pull_all: true + organization_domains. This auto-paginates and fetches ALL contacts without using enrichment credits.';
       system += '\n- **Large companies (200+ employees)**: Use SMART FILTERS. Apply person_titles, person_seniorities, and/or departments to narrow results. Example: If user wants "contacts", infer the likely targets:';
       system += '\n  • General "pull contacts" → filter to seniorities: ["c_suite", "vp", "director", "manager"] to get decision-makers';
       system += '\n  • "Sales team" → filter person_titles: ["Sales", "Account Executive", "SDR", "BDR", "Revenue"]';
@@ -457,14 +460,14 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
   if (enabledTools.includes('apollo_search_people')) {
     tools.push({
       name: 'apollo_search_people',
-      description: 'Search for people in Apollo.io\'s database using FILTERS, then automatically reveals top matches to get full details (email, phone, name). This is the best way to find a specific role at a company (e.g. "find the CEO of Tesla"). ALWAYS use person_titles + organization_domains filters to narrow results. COMPANY SIZE STRATEGY: For companies with <200 employees, set per_page up to 100 to pull ALL contacts. For companies with 200+ employees, use person_titles/person_seniorities filters and keep per_page low (1-5). Returns full professional profiles with verified emails.',
+      description: 'Search for people in Apollo.io\'s database. TWO MODES: (1) Targeted search (per_page 1-24): finds specific roles, reveals full details with email. (2) Bulk pull (pull_all: true): auto-paginates through ALL matching people, caches results for bulk_write — use this when pulling ALL employees from a company. COMPANY SIZE STRATEGY: <200 employees → use pull_all: true. 200+ employees → use filters + low per_page.',
       input_schema: {
         type: 'object',
         properties: {
           person_titles: {
             type: 'array',
             items: { type: 'string' },
-            description: 'REQUIRED for role searches. Job titles to filter by (e.g. ["CEO"], ["CTO", "Chief Technology Officer"], ["VP Sales", "Vice President of Sales"])',
+            description: 'Job titles to filter by (e.g. ["CEO"], ["CTO", "Chief Technology Officer"])',
           },
           organization_domains: {
             type: 'array',
@@ -484,7 +487,7 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
           person_seniorities: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Seniority filter. Values: "c_suite", "vp", "director", "manager", "senior", "entry". Use "c_suite" for CEO/CTO/CFO/COO searches.',
+            description: 'Seniority filter. Values: "c_suite", "vp", "director", "manager", "senior", "entry".',
           },
           q_keywords: {
             type: 'string',
@@ -492,7 +495,11 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
           },
           per_page: {
             type: 'number',
-            description: 'Number of results to return. Use 1-3 for specific role lookups. Use up to 100 to pull all employees from small companies (<200 people). Default: 3.',
+            description: 'Results per page. Use 1-3 for specific role lookups. Ignored when pull_all is true. Default: 3.',
+          },
+          pull_all: {
+            type: 'boolean',
+            description: 'Set to true to auto-paginate and fetch ALL matching people (up to 10K). Results are cached for bulk_write. Use for "pull all employees from X" requests. Does NOT consume enrichment credits.',
           },
         },
         required: [],
