@@ -662,17 +662,46 @@
 
       // Enrich message with selection context if rows are highlighted
       var enrichedText = text;
-      if (selectedRows.length > 0) {
-        enrichedText += '\n\n[User has ' + selectedRows.length + ' rows selected (rows ' + 
-          selectedRows.slice(0, 5).join(', ') + 
-          (selectedRows.length > 5 ? '...' : '') + '). Process ONLY these selected rows.]';
-      }
 
       // Always refresh sheet context before sending so agent sees latest data
       google.script.run
         .withSuccessHandler(function(freshContext) {
           sheetContext = freshContext;
           updateSheetInfo(freshContext);
+
+          // Now that we have fresh context, build selection detail with actual row data
+          if (selectedRows.length > 0) {
+            var selectionDetail = '\n\n[User has ' + selectedRows.length + ' rows selected. Process ONLY these selected rows.\n';
+            var headers = (freshContext.headers || []).map(function(h) { return h.name; });
+            var sampleRows = freshContext.sampleRows || [];
+            for (var si = 0; si < Math.min(selectedRows.length, 10); si++) {
+              var rowNum = selectedRows[si]; // 1-indexed row number (2 = first data row)
+              // Find the matching sampleRow by _rowNumber
+              var rowData = null;
+              for (var ri = 0; ri < sampleRows.length; ri++) {
+                if (sampleRows[ri]._rowNumber === rowNum) {
+                  rowData = sampleRows[ri];
+                  break;
+                }
+              }
+              if (rowData) {
+                selectionDetail += 'Row ' + rowNum + ': ';
+                var parts = [];
+                for (var hi = 0; hi < headers.length; hi++) {
+                  var val = rowData[headers[hi]];
+                  if (val !== undefined && val !== null && val !== '') {
+                    parts.push(headers[hi] + '="' + val + '"');
+                  }
+                }
+                selectionDetail += parts.join(', ') + '\n';
+              } else {
+                selectionDetail += 'Row ' + rowNum + ': (data unavailable)\n';
+              }
+            }
+            if (selectedRows.length > 10) selectionDetail += '...and ' + (selectedRows.length - 10) + ' more rows.\n';
+            selectionDetail += ']';
+            enrichedText += selectionDetail;
+          }
 
           google.script.run
             .withSuccessHandler(function(response) {
