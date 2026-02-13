@@ -894,7 +894,8 @@ async function apolloFindListByName(listName: string): Promise<any | null> {
 
 /**
  * Fetches ALL entries (accounts or contacts) FROM an Apollo list.
- * Auto-paginates through all pages (100 per page, up to 5000 entries).
+ * Auto-paginates through all pages (100 per page, up to 10,000 entries).
+ * Uses a time-based safety cutoff (120s) to stay within Edge Function limits.
  * 
  * The full dataset is cached in _cachedListEntries so that handleChat
  * can construct bulk_write responses without Claude having to enumerate
@@ -920,15 +921,20 @@ async function apolloGetListEntries(input: {
       return `List "${input.list_name}" not found. Use apollo_get_lists with a search term to find it.`;
     }
 
-    const PER_PAGE = 100;  // Apollo max
-    const MAX_PAGES = 50;  // Safety: 5000 entries max
+    const PER_PAGE = 100;    // Apollo max per page
+    const MAX_ENTRIES = 10000; // Support up to 10K entries
+    const TIME_LIMIT_MS = 120_000; // 120s safety cutoff (Edge Function limit ~150s)
+    const startTime = Date.now();
     const allEntries: Array<Record<string, string>> = [];
     let totalEntries = 0;
     let page = 1;
+    let timedOut = false;
 
-    // Step 2: Auto-paginate through ALL pages
+    // Step 2: Auto-paginate through ALL pages with time-based safety
     if (list.modality === 'accounts') {
-      while (page <= MAX_PAGES) {
+      while (allEntries.length < MAX_ENTRIES) {
+        if (Date.now() - startTime > TIME_LIMIT_MS) { timedOut = true; break; }
+
         const data = await apolloRequest('/v1/accounts/search', {
           label_ids: [list.id],
           per_page: PER_PAGE,
@@ -957,7 +963,9 @@ async function apolloGetListEntries(input: {
       }
     } else {
       // Contacts list
-      while (page <= MAX_PAGES) {
+      while (allEntries.length < MAX_ENTRIES) {
+        if (Date.now() - startTime > TIME_LIMIT_MS) { timedOut = true; break; }
+
         const data = await apolloRequest('/api/v1/mixed_people/api_search', {
           label_ids: [list.id],
           per_page: PER_PAGE,
@@ -978,6 +986,7 @@ async function apolloGetListEntries(input: {
             title: p.title || '',
             company: p.organization?.name || '',
             domain: p.organization?.primary_domain || '',
+            linkedin: p.linkedin_url || '',
           });
         }
 
@@ -988,6 +997,7 @@ async function apolloGetListEntries(input: {
 
     const fetchedCount = allEntries.length;
     const total = totalEntries || fetchedCount;
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
     if (fetchedCount === 0) {
       return `List "${list.name}" exists but has no entries.`;
@@ -1001,13 +1011,15 @@ async function apolloGetListEntries(input: {
       totalCount: total,
     };
 
-    // Step 4: Return a compact SUMMARY to Claude (not all 255+ entries)
+    // Step 4: Return a compact SUMMARY to Claude (not all entries)
     const typeLabel = list.modality === 'accounts' ? 'companies' : 'contacts';
-    let summary = `✅ Fetched all ${fetchedCount} ${typeLabel} from list "${list.name}"`;
-    if (total > fetchedCount) {
-      summary += ` (${total} total in list)`;
+    let summary = `✅ Fetched ${fetchedCount} ${typeLabel} from list "${list.name}"`;
+    if (timedOut) {
+      summary += ` (fetched ${fetchedCount} of ${total} before time limit — the rest can be fetched in a follow-up)`;
+    } else if (total > fetchedCount) {
+      summary += ` (${total} total in list, capped at ${MAX_ENTRIES})`;
     }
-    summary += '.\n\n';
+    summary += ` in ${elapsed}s.\n\n`;
 
     // Show first 5 as samples
     const sampleCount = Math.min(5, fetchedCount);
@@ -1031,7 +1043,7 @@ async function apolloGetListEntries(input: {
     if (list.modality === 'accounts') {
       summary += `\nAvailable fields: name, domain, website, industry, employees`;
     } else {
-      summary += `\nAvailable fields: name, email, title, company, domain`;
+      summary += `\nAvailable fields: name, email, title, company, domain, linkedin`;
     }
     summary += `\n\n[Dataset cached — respond with bulk_write using source: "apollo_list" and a fields mapping to write all ${fetchedCount} entries to the sheet]`;
 

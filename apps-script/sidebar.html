@@ -748,24 +748,81 @@
 
       // Agent returned bulk data to write directly to the sheet
       if (response.bulkWrite && response.bulkWrite.rows && response.bulkWrite.rows.length > 0) {
+        var totalRows = response.bulkWrite.rows.length;
         var targetSheet = response.bulkWrite.sheetName ? ' to "' + response.bulkWrite.sheetName + '"' : '';
-        addMessage('system', '📥 Writing ' + response.bulkWrite.rows.length + ' rows' + targetSheet + '...');
-        google.script.run
-          .withSuccessHandler(function(result) {
-            if (result && result.success) {
+        var CHUNK_SIZE = 2000;
+
+        if (totalRows <= CHUNK_SIZE) {
+          // Small enough to write in one shot
+          addMessage('system', '📥 Writing ' + totalRows + ' rows' + targetSheet + '...');
+          google.script.run
+            .withSuccessHandler(function(result) {
+              if (result && result.success) {
+                var sheetNote = response.bulkWrite.sheetName ? ' on "' + response.bulkWrite.sheetName + '"' : '';
+                addMessage('agent', 
+                  '✓ Wrote <strong>' + result.rowsWritten + ' rows</strong> starting at row ' + result.startRow + sheetNote + '. Check your sheet!'
+                );
+                refreshContext();
+              } else {
+                addMessage('error', 'Failed to write rows: ' + (result ? result.error : 'Unknown error'));
+              }
+            })
+            .withFailureHandler(function(err) {
+              addMessage('error', 'Write error: ' + err.message);
+            })
+            .writeBulkRows(response.bulkWrite);
+        } else {
+          // Large dataset — write in chunks of CHUNK_SIZE to avoid Apps Script timeouts
+          var chunks = [];
+          for (var ci = 0; ci < totalRows; ci += CHUNK_SIZE) {
+            chunks.push(response.bulkWrite.rows.slice(ci, ci + CHUNK_SIZE));
+          }
+          addMessage('system', '📥 Writing ' + totalRows + ' rows' + targetSheet + ' in ' + chunks.length + ' batches...');
+
+          var chunkIdx = 0;
+          var firstStartRow = null;
+
+          function writeNextChunk() {
+            if (chunkIdx >= chunks.length) {
               var sheetNote = response.bulkWrite.sheetName ? ' on "' + response.bulkWrite.sheetName + '"' : '';
               addMessage('agent', 
-                '✓ Wrote <strong>' + result.rowsWritten + ' rows</strong> starting at row ' + result.startRow + sheetNote + '. Check your sheet!'
+                '✓ Wrote <strong>' + totalRows + ' rows</strong> starting at row ' + firstStartRow + sheetNote + '. Check your sheet!'
               );
               refreshContext();
-            } else {
-              addMessage('error', 'Failed to write rows: ' + (result ? result.error : 'Unknown error'));
+              return;
             }
-          })
-          .withFailureHandler(function(err) {
-            addMessage('error', 'Write error: ' + err.message);
-          })
-          .writeBulkRows(response.bulkWrite);
+
+            var chunkPayload = {
+              columns: response.bulkWrite.columns,
+              rows: chunks[chunkIdx],
+              sheetName: response.bulkWrite.sheetName || undefined,
+            };
+            // For first chunk, let writeBulkRows auto-detect startRow
+            // For subsequent chunks, set startRow to continue after previous chunk
+            if (chunkIdx > 0 && firstStartRow !== null) {
+              chunkPayload.startRow = firstStartRow + (chunkIdx * CHUNK_SIZE);
+            }
+
+            addMessage('system', '  Batch ' + (chunkIdx + 1) + '/' + chunks.length + ' (' + chunks[chunkIdx].length + ' rows)...');
+
+            google.script.run
+              .withSuccessHandler(function(result) {
+                if (result && result.success) {
+                  if (firstStartRow === null) firstStartRow = result.startRow;
+                  chunkIdx++;
+                  writeNextChunk();
+                } else {
+                  addMessage('error', 'Batch ' + (chunkIdx + 1) + ' failed: ' + (result ? result.error : 'Unknown error'));
+                }
+              })
+              .withFailureHandler(function(err) {
+                addMessage('error', 'Batch ' + (chunkIdx + 1) + ' write error: ' + err.message);
+              })
+              .writeBulkRows(chunkPayload);
+          }
+
+          writeNextChunk();
+        }
         return; // Don't process further — bulk write handled
       }
 

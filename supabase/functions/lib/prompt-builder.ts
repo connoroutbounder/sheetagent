@@ -123,7 +123,7 @@ After calling apollo_get_list_entries, the full dataset is cached server-side. Y
 }
 \`\`\`
 Available fields for account lists: name, domain, website, industry, employees
-Available fields for contact lists: name, email, title, company, domain
+Available fields for contact lists: name, email, title, company, domain, linkedin
 
 **For small/manual datasets (non-Apollo):**
 \`\`\`bulk_write
@@ -548,7 +548,7 @@ export function buildToolDefinitions(config: AgentConfig): any[] {
   if (enabledTools.includes('apollo_get_list_entries')) {
     tools.push({
       name: 'apollo_get_list_entries',
-      description: 'Fetch ALL companies or contacts FROM an Apollo.io list. Auto-paginates to retrieve the entire list (up to 5000 entries). Returns a summary with sample entries — the full dataset is cached server-side for bulk_write. After calling this, respond with a bulk_write block using source: "apollo_list" and a fields mapping.',
+      description: 'Fetch ALL companies or contacts FROM an Apollo.io list. Auto-paginates to retrieve the entire list (up to 10,000 entries). Returns a summary with sample entries — the full dataset is cached server-side for bulk_write. After calling this, respond with a bulk_write block using source: "apollo_list" and a fields mapping. For contact lists, available fields: name, email, title, company, domain, linkedin.',
       input_schema: {
         type: 'object',
         properties: {
