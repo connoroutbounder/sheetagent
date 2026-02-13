@@ -26,7 +26,8 @@ import type { ChatRequest, StartRunRequest, StopRunRequest, ChatResponse, AgentC
 const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY') || '';
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || '';
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
-const MODEL = 'claude-sonnet-4-5-20250929';
+const ORCHESTRATOR_MODEL = 'claude-opus-4-0-20250514';  // Chat/planning — best reasoning
+const WORKER_MODEL = 'claude-sonnet-4-5-20250929';      // Row processing — fast & cheap
 const MAX_TOOL_ROUNDS = 5;
 const BATCH_SIZE = 25; // Rows per batch — fits within ~150s timeout
 
@@ -111,7 +112,7 @@ async function handleChat(request: ChatRequest, user: any): Promise<ChatResponse
   // Multi-turn tool execution loop (same pattern as processRow)
   let finalTextContent = '';
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const response = await callClaude(systemPrompt, messages, chatTools.length > 0 ? chatTools : undefined);
+    const response = await callClaude(systemPrompt, messages, chatTools.length > 0 ? chatTools : undefined, ORCHESTRATOR_MODEL, 4096);
 
     if (!response) {
       return { error: 'Failed to get response from AI' };
@@ -494,7 +495,7 @@ async function processBatchAsync(
       const hasApolloTools = (config.tools || []).some(t => t.startsWith('apollo_'));
       const hasZerobounceTools = (config.tools || []).some(t => t.startsWith('zerobounce_'));
       const hasGetsalesTools = (config.tools || []).some(t => t.startsWith('getsales_'));
-      const modelParts = [MODEL];
+      const modelParts = [WORKER_MODEL];
       if (hasWebTools) modelParts.push('perplexity/sonar');
       if (hasApolloTools) modelParts.push('apollo.io');
       if (hasZerobounceTools) modelParts.push('zerobounce');
@@ -686,11 +687,13 @@ async function handleStop(supabase: any, request: StopRunRequest) {
 async function callClaude(
   system: string,
   messages: any[],
-  tools?: any[]
+  tools?: any[],
+  model?: string,
+  maxTokens?: number
 ): Promise<any> {
   const body: any = {
-    model: MODEL,
-    max_tokens: 1024,
+    model: model || WORKER_MODEL,
+    max_tokens: maxTokens || 1024,
     system,
     messages,
   };
