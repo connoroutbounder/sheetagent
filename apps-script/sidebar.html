@@ -452,6 +452,7 @@
       <div class="header-sub" id="sheetName">Loading sheet...</div>
     </div>
     <div class="header-actions">
+      <button class="header-btn" onclick="google.script.run.showMemory()" title="Agent Memory" style="font-size: 13px;">🧠</button>
       <button class="header-btn" onclick="refreshContext()" title="Refresh sheet context">↻</button>
     </div>
   </div>
@@ -540,6 +541,7 @@
     let pendingAckRows = [];  // Rows we've written that need backend acknowledgment
     let selectedRows = [];    // Highlighted rows to process (empty = all)
     let selectionCheckInterval = null;
+    let agentMemory = '';      // Persistent context from Memory dialog
 
     // ========================================================
     // INITIALIZATION
@@ -548,9 +550,20 @@
     function init() {
       loadSheetContext();
       loadAgents();
+      loadMemory();
       // Check for selection changes every 3 seconds
       selectionCheckInterval = setInterval(checkSelection, 3000);
       checkSelection(); // Initial check
+    }
+
+    function loadMemory() {
+      google.script.run
+        .withSuccessHandler(function(data) {
+          if (data && data.memory) {
+            agentMemory = data.memory;
+          }
+        })
+        .getMemory();
     }
 
     function checkSelection() {

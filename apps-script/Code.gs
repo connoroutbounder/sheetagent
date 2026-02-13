@@ -33,6 +33,7 @@ function onOpen(e) {
     .addItem('Run Last Agent', 'runLastAgent')
     .addItem('Stop Running Agent', 'stopRunningAgent')
     .addSeparator()
+    .addItem('🧠 Agent Memory', 'showMemory')
     .addItem('Settings', 'showSettings')
     .addToUi();
 }
@@ -65,6 +66,75 @@ function showSettings() {
     .setWidth(400)
     .setHeight(300);
   SpreadsheetApp.getUi().showModalDialog(html, 'Agent Builder Settings');
+}
+
+/**
+ * Opens the Agent Memory dialog.
+ */
+function showMemory() {
+  const html = HtmlService.createHtmlOutputFromFile('memory')
+    .setTitle('Agent Memory')
+    .setWidth(520)
+    .setHeight(600);
+  SpreadsheetApp.getUi().showModalDialog(html, '🧠 Agent Memory');
+}
+
+/**
+ * Gets the saved agent memory (context).
+ * Uses DocumentProperties so each spreadsheet has its own memory.
+ * Large text is chunked across multiple properties.
+ */
+function getMemory() {
+  var docProps = PropertiesService.getDocumentProperties();
+  var chunkCount = parseInt(docProps.getProperty('agent_memory_chunks') || '0');
+  
+  if (chunkCount === 0) {
+    // Try single property (legacy or short text)
+    var single = docProps.getProperty('agent_memory') || '';
+    return { memory: single };
+  }
+  
+  // Reassemble from chunks
+  var text = '';
+  for (var i = 0; i < chunkCount; i++) {
+    text += docProps.getProperty('agent_memory_' + i) || '';
+  }
+  return { memory: text };
+}
+
+/**
+ * Saves agent memory (context).
+ * Uses DocumentProperties so each spreadsheet has its own memory.
+ * Chunks large text into 8KB segments to stay within Apps Script limits.
+ */
+function saveMemory(text) {
+  var docProps = PropertiesService.getDocumentProperties();
+  var CHUNK_SIZE = 8000; // 8KB per chunk (under 9KB limit)
+  
+  // Clear old chunks
+  var oldChunkCount = parseInt(docProps.getProperty('agent_memory_chunks') || '0');
+  for (var i = 0; i < oldChunkCount; i++) {
+    docProps.deleteProperty('agent_memory_' + i);
+  }
+  docProps.deleteProperty('agent_memory'); // legacy single property
+  
+  if (!text || text.length === 0) {
+    docProps.setProperty('agent_memory_chunks', '0');
+    return { success: true };
+  }
+  
+  // Chunk the text
+  var chunks = [];
+  for (var j = 0; j < text.length; j += CHUNK_SIZE) {
+    chunks.push(text.substring(j, j + CHUNK_SIZE));
+  }
+  
+  for (var k = 0; k < chunks.length; k++) {
+    docProps.setProperty('agent_memory_' + k, chunks[k]);
+  }
+  docProps.setProperty('agent_memory_chunks', String(chunks.length));
+  
+  return { success: true };
 }
 
 /**
@@ -146,11 +216,15 @@ function getSessionToken() {
  * This is the main chat endpoint called from the sidebar.
  */
 function sendMessage(message, context, history) {
+  // Attach persistent agent memory (company context, brand voice, etc.)
+  var memoryData = getMemory();
+  
   const payload = {
     action: 'chat',
     message: message,
     sheetContext: context || SheetContext.capture(),
     conversationHistory: history || [],
+    memory: memoryData.memory || '',
     spreadsheetId: SpreadsheetApp.getActiveSpreadsheet().getId(),
     sheetName: SpreadsheetApp.getActiveSheet().getName(),
     userEmail: getUserEmail(),
@@ -166,11 +240,13 @@ function sendMessage(message, context, history) {
  */
 function startAgentRun(agentConfig, selectedRows) {
   const context = SheetContext.capture();
+  var memoryData = getMemory();
   
   const payload = {
     action: 'start_run',
     agentConfig: agentConfig,
     sheetContext: context,
+    memory: memoryData.memory || '',
     spreadsheetId: SpreadsheetApp.getActiveSpreadsheet().getId(),
     sheetName: SpreadsheetApp.getActiveSheet().getName(),
     userEmail: getUserEmail(),
@@ -262,11 +338,13 @@ function getJobStatus(jobId, ackRows) {
  */
 function continueAgentRun(jobId) {
   var context = SheetContext.capture();
+  var memoryData = getMemory();
   
   var payload = {
     action: 'continue_run',
     jobId: jobId,
     sheetContext: context,
+    memory: memoryData.memory || '',
     spreadsheetId: SpreadsheetApp.getActiveSpreadsheet().getId(),
     sheetName: SpreadsheetApp.getActiveSheet().getName(),
     userEmail: getUserEmail(),

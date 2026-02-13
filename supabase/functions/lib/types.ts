@@ -109,6 +109,7 @@ export interface ChatRequest {
   sheetName: string;
   userEmail: string;
   conversationHistory?: Array<{ role: string; content: string }>;
+  memory?: string;  // Persistent context: company info, brand voice, custom rules
 }
 
 export interface StartRunRequest {
@@ -118,6 +119,7 @@ export interface StartRunRequest {
   spreadsheetId: string;
   sheetName: string;
   userEmail: string;
+  memory?: string;  // Persistent context: company info, brand voice, custom rules
 }
 
 export interface StopRunRequest {

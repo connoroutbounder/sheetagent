@@ -87,7 +87,7 @@ Deno.serve(async (req) => {
 // =============================================================
 
 async function handleChat(request: ChatRequest, user: any): Promise<ChatResponse> {
-  const systemPrompt = buildChatPrompt(request.sheetContext);
+  const systemPrompt = buildChatPrompt(request.sheetContext, request.memory);
 
   const messages: any[] = [
     ...(request.conversationHistory || []).map(m => ({
@@ -241,6 +241,7 @@ async function handleStartRun(
   user: any
 ): Promise<ChatResponse> {
   const { agentConfig, sheetContext, spreadsheetId, sheetName, selectedRows } = request;
+  const memory = (request as any).memory || '';
 
   // Use explicitly selected rows if provided, otherwise auto-detect
   const rowsToProcess = (selectedRows && selectedRows.length > 0)
@@ -305,7 +306,7 @@ async function handleStartRun(
 
   // Process FIRST BATCH in background
   const firstBatch = rowsToProcess.slice(0, BATCH_SIZE);
-  processBatchAsync(supabase, run.id, agentConfig, sheetContext, spreadsheetId, sheetName, firstBatch);
+  processBatchAsync(supabase, run.id, agentConfig, sheetContext, spreadsheetId, sheetName, firstBatch, memory);
 
   return {
     message: `Starting agent run on ${rowsToProcess.length} rows (batch 1 of ${Math.ceil(rowsToProcess.length / BATCH_SIZE)})...`,
@@ -323,7 +324,7 @@ async function handleContinueRun(
   supabase: any,
   body: any
 ): Promise<ChatResponse> {
-  const { jobId, sheetContext, spreadsheetId, sheetName } = body;
+  const { jobId, sheetContext, spreadsheetId, sheetName, memory } = body;
 
   if (!jobId) {
     return { error: 'Missing jobId' };
@@ -386,7 +387,7 @@ async function handleContinueRun(
     .eq('id', jobId);
 
   // Process this batch in background
-  processBatchAsync(supabase, jobId, config, ctx, spreadsheetId || run.spreadsheet_id, sheetName || run.sheet_name, batchRows);
+  processBatchAsync(supabase, jobId, config, ctx, spreadsheetId || run.spreadsheet_id, sheetName || run.sheet_name, batchRows, memory || '');
 
   const totalPending = pendingRows.length;
   const batchNum = Math.ceil((run.total_rows - totalPending) / BATCH_SIZE) + 1;
@@ -418,7 +419,8 @@ async function processBatchAsync(
   sheetContext: SheetContext,
   spreadsheetId: string,
   sheetName: string,
-  batchRows: number[]
+  batchRows: number[],
+  memory?: string
 ) {
   // Try to initialize Sheets client for direct write-back (optional)
   let sheetsClient: SheetsClient | null = null;
@@ -486,7 +488,7 @@ async function processBatchAsync(
       .eq('id', runId);
 
     try {
-      const result = await processRow(config, rowData, sheetContext, toolDefinitions);
+      const result = await processRow(config, rowData, sheetContext, toolDefinitions, memory);
 
       const hasWebTools = (config.tools || []).some(t => ['search', 'web_scrape', 'web_research'].includes(t));
       const hasApolloTools = (config.tools || []).some(t => t.startsWith('apollo_'));
@@ -597,7 +599,8 @@ async function processRow(
   config: AgentConfig,
   rowData: RowData,
   sheetContext: SheetContext,
-  toolDefinitions: any[]
+  toolDefinitions: any[],
+  memory?: string
 ): Promise<{
   output: string;
   inputTokens: number;
@@ -606,7 +609,7 @@ async function processRow(
   latencyMs: number;
 }> {
   const startTime = Date.now();
-  const { system, user } = buildRowPrompt(config, rowData, sheetContext);
+  const { system, user } = buildRowPrompt(config, rowData, sheetContext, memory);
 
   let messages: any[] = [{ role: 'user', content: user }];
   let totalInputTokens = 0;

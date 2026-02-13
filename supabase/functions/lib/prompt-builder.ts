@@ -206,8 +206,16 @@ IMPORTANT: Include the agent_config or bulk_write block as soon as the user's in
  * Builds the system prompt for the chat/planning phase.
  * This is used when the user is talking to the sidebar to configure an agent.
  */
-export function buildChatPrompt(sheetContext: SheetContext): string {
+export function buildChatPrompt(sheetContext: SheetContext, memory?: string): string {
   let prompt = CHAT_SYSTEM_PROMPT;
+
+  // Inject persistent agent memory (company context, brand voice, custom rules)
+  if (memory && memory.trim()) {
+    prompt += '\n\n--- AGENT MEMORY (PERSISTENT CONTEXT) ---\n';
+    prompt += 'The user has provided the following background information. Use it to inform ALL your responses, agent configurations, and processing. This context applies to every interaction.\n\n';
+    prompt += memory.trim();
+    prompt += '\n--- END AGENT MEMORY ---\n';
+  }
 
   prompt += '\n\n--- CURRENT SHEET CONTEXT ---\n';
   prompt += `Sheet: "${sheetContext.sheetName}" (${sheetContext.rowCount} rows, ${sheetContext.columnCount} columns)\n\n`;
@@ -242,10 +250,19 @@ export function buildChatPrompt(sheetContext: SheetContext): string {
 export function buildRowPrompt(
   config: AgentConfig,
   row: RowData,
-  sheetContext: SheetContext
+  sheetContext: SheetContext,
+  memory?: string
 ): { system: string; user: string } {
   // System prompt
   let system = config.systemPrompt || BASE_SYSTEM_PROMPT;
+
+  // Inject persistent agent memory (company context, brand voice, custom rules)
+  if (memory && memory.trim()) {
+    system += '\n\n--- AGENT MEMORY (PERSISTENT CONTEXT) ---\n';
+    system += memory.trim();
+    system += '\n--- END AGENT MEMORY ---\n';
+    system += '\nUse the above context to inform your output. Match the specified tone, use company-specific details, and follow any custom rules provided.';
+  }
   
   // Add model routing context
   const hasWebTools = (config.tools || []).some(t => ['search', 'web_scrape', 'web_research'].includes(t));
