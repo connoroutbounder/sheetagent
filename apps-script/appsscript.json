@@ -18,7 +18,7 @@
   "addOns": {
     "common": {
       "name": "Agent Builder",
-      "logoUrl": "https://cdn-icons-png.flaticon.com/512/4616/4616734.png",
+      "logoUrl": "https://www.gstatic.com/images/branding/product/1x/apps_script_48dp.png",
       "layoutProperties": {
         "primaryColor": "#34d399"
       }
@@ -26,6 +26,9 @@
     "sheets": {
       "homepageTrigger": {
         "runFunction": "onHomepage"
+      },
+      "onFileScopeGrantedTrigger": {
+        "runFunction": "onFileScopeGranted"
       }
     }
   }
